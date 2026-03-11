@@ -1,0 +1,99 @@
+.connect-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.connect-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.connect-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.connect-card {
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--panel);
+  backdrop-filter: blur(22px);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.connect-card h2 {
+  margin-bottom: 14px;
+}
+
+.connect-card .field-label {
+  margin-top: 10px;
+}
+
+.code-box {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px dashed rgba(17, 52, 45, 0.24);
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.code-value {
+  font: 700 38px/1 "Iowan Old Style", "Palatino Linotype", serif;
+  letter-spacing: 0.18em;
+}
+
+.code-meta {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.payload-input {
+  width: 100%;
+  border: 1px solid rgba(17, 52, 45, 0.12);
+  border-radius: 16px;
+  background: white;
+  padding: 12px 14px;
+  font: 14px/1.5 "Segoe UI Variable", "Aptos", sans-serif;
+  resize: vertical;
+}
+
+.log-card {
+  margin-top: 18px;
+}
+
+.log-box {
+  margin: 0;
+  min-height: 240px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(17, 52, 45, 0.12);
+  background: #17231f;
+  color: #d7f6ea;
+  padding: 12px;
+  font: 13px/1.45 Consolas, "SFMono-Regular", monospace;
+}
+
+@media (max-width: 980px) {
+  .connect-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-head,
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

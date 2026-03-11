@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Local Chat</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">C</div>
+          <div>
+            <p class="eyebrow">LOCAL CODEX</p>
+            <h1>Codex Sessions</h1>
+          </div>
+        </div>
+
+        <div class="sidebar-actions">
+          <button id="newSessionBtn" class="primary-btn">New Session</button>
+        </div>
+
+        <div id="sessionList" class="session-list"></div>
+
+        <div class="sidebar-foot">
+          <div id="statusPill" class="status-pill">Checking local Codex...</div>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="hero">
+          <div>
+            <p class="eyebrow">STREAMING CHAT</p>
+            <h2 id="sessionTitle">New Session</h2>
+            <p id="sessionMeta" class="hero-copy">Backed by your local official Codex CLI session.</p>
+          </div>
+          <div class="hero-actions">
+            <a class="ghost-btn link-btn" href="/assets/connect.html">Connection Code</a>
+            <button id="sessionSettingsBtn" class="ghost-btn" type="button">Session Settings</button>
+            <div class="hero-badge">No API key mode</div>
+          </div>
+        </header>
+
+        <section id="chatWindow" class="chat-window"></section>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="messageInput"
+            rows="3"
+            placeholder="Ask your local Codex anything..."
+          ></textarea>
+          <div class="composer-bar">
+            <div class="composer-note">Streaming from local `codex app-server`.</div>
+            <button id="sendBtn" type="submit" class="primary-btn">Send</button>
+          </div>
+        </form>
+      </main>
+    </div>
+
+    <template id="messageTemplate">
+      <article class="message">
+        <div class="message-role"></div>
+        <div class="message-body"></div>
+      </article>
+    </template>
+
+    <dialog id="workspaceDialog" class="workspace-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">SESSION SETTINGS</p>
+          <h3>Workspace and Mode</h3>
+        </div>
+        <button id="closeDialogBtn" class="ghost-btn" type="button">Close</button>
+      </div>
+
+      <div class="dialog-block">
+        <label class="field-label" for="workspacePath">Selected folder</label>
+        <input id="workspacePath" class="path-input" type="text" readonly />
+      </div>
+
+      <div class="dialog-block switch-row">
+        <div>
+          <label class="field-label" for="yoloToggle">Yolo mode</label>
+          <p class="field-help">Uses `danger-full-access` with no approval prompts for this session.</p>
+        </div>
+        <input id="yoloToggle" type="checkbox" />
+      </div>
+
+      <div class="dialog-block">
+        <div class="folder-toolbar">
+          <button id="goHomeBtn" class="ghost-btn" type="button">Home</button>
+          <button id="goUpBtn" class="ghost-btn" type="button">Up</button>
+        </div>
+        <div id="directoryList" class="directory-list"></div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+  </html>

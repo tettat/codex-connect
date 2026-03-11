@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pair Code Console</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <link rel="stylesheet" href="/assets/connect.css" />
+  </head>
+  <body>
+    <div class="connect-shell">
+      <header class="connect-head">
+        <div>
+          <p class="eyebrow">SERVER SIDE</p>
+          <h1>Pair Code Console</h1>
+          <p class="hero-copy">This page asks your local server to create a code from ServerA.</p>
+        </div>
+        <a class="ghost-btn link-btn" href="/">Back To Chat</a>
+      </header>
+
+      <section class="connect-grid">
+        <article class="connect-card">
+          <h2>Connection Code</h2>
+          <label class="field-label" for="ttlInput">TTL Seconds</label>
+          <input id="ttlInput" class="path-input" type="number" min="30" max="3600" value="300" />
+          <div class="row">
+            <button id="createCodeBtn" class="primary-btn" type="button">Refresh Now</button>
+            <button id="refreshBtn" class="ghost-btn" type="button">Refresh Status</button>
+          </div>
+          <div class="code-box">
+            <div id="codeValue" class="code-value">------</div>
+            <div id="codeMeta" class="code-meta">No active code.</div>
+          </div>
+        </article>
+
+        <article class="connect-card">
+          <h2>Broker Status</h2>
+          <label class="field-label">Broker URL</label>
+          <input id="brokerUrl" class="path-input" type="text" readonly />
+          <label class="field-label">Server ID</label>
+          <input id="serverId" class="path-input" type="text" readonly />
+          <label class="field-label">Installation ID</label>
+          <input id="pairId" class="path-input" type="text" readonly />
+          <label class="field-label">Last Error</label>
+          <input id="lastError" class="path-input" type="text" readonly />
+        </article>
+      </section>
+
+      <section class="connect-card log-card">
+        <h2>Live Log</h2>
+        <pre id="logBox" class="log-box"></pre>
+      </section>
+    </div>
+    <script type="module" src="/assets/connect.js"></script>
+  </body>
+</html>
