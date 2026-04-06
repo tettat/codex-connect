@@ -88,6 +88,7 @@ httpServer.on("upgrade", (req, socket, head) => {
         sessionId: `sess_${crypto.randomUUID().replace(/-/g, "")}`,
         role: null,
         serverId: null,
+        serverName: null,
         installationId: null,
         clientId: null
       };
@@ -152,6 +153,7 @@ function onMessage(session, raw) {
 
 function handleRegisterServer(session, msg) {
   const installationId = normalizeId(msg.installation_id);
+  const serverName = safeString(msg.server_name, 120) || null;
   if (!installationId) {
     send(session, errorReply(msg.req_id || null, "installation_id is required"));
     return;
@@ -171,6 +173,7 @@ function handleRegisterServer(session, msg) {
   const serverId = `srv_${crypto.randomUUID().replace(/-/g, "")}`;
   session.role = "server";
   session.serverId = serverId;
+  session.serverName = serverName;
   session.installationId = installationId;
   serversById.set(serverId, session);
   serversByInstallationId.set(installationId, session);
@@ -359,6 +362,7 @@ function handleAuthResult(session, msg) {
     client_id: client.clientId,
     installation_id: session.installationId,
     server_id: session.serverId,
+    server_name: safeString(session.serverName, 120),
     device_id: deviceId
   });
 

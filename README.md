@@ -94,6 +94,24 @@ $env:BROKER_URL="ws://your-host:8000/ws"
 
 然后再执行 Gradle 或 Android Studio 构建。
 
+### 多设备与 Mac 接入
+
+- 一个远程 broker 可以同时承载多台已连接的主服务；手机客户端现在可保存多台已配对设备，并在设备之间切换
+- 如需让手机端更易识别 Mac，请在 Mac 的 `.env` 中设置 `PAIR_SERVER_NAME=My MacBook`
+- 手机端切换设备时，会按设备分别保存会话、工作区和受信凭证
+- `service-a-broker.mjs` 已补充重连时返回 `server_name`；旧 broker 也能工作，但建议同步部署最新版本
+
+### 凭据中心与 Git Worktree
+
+- 主服务现在支持设备级“凭据中心”，可把一个目录设为统一的凭据 / skills 根目录
+- 默认凭据中心目录是 `CODEX_HOME/credential-center`
+- 默认 worktree 根目录是 `CODEX_HOME/worktrees`
+- Android 客户端支持：
+  - 设备级凭据中心
+  - 项目绑定凭据 / skills
+  - `@` 上下文选择并注入当前会话
+  - 项目级 Git 工作台、worktree 会话、临时合并 / rebase 会话
+
 ### 安全说明
 
 - 实际密钥应只放在本地 `.env`
@@ -119,6 +137,8 @@ $env:BROKER_URL="ws://your-host:8000/ws"
 - `BROKER_OPENAI_API_TOKEN`：broker Bearer 鉴权
 - `BROKER_RPC_TIMEOUT_MS`：broker RPC 超时
 - `DEVICE_FILE_ROOTS`：允许暴露给客户端的设备文件根目录
+- `DEVICE_CREDENTIALS_ROOT`：设备级凭据中心根目录
+- `DEVICE_WORKTREE_ROOT`：设备级 Git worktree 根目录
 
 ### 示例请求
 
@@ -224,6 +244,18 @@ Override it before building if needed:
 $env:BROKER_URL="ws://your-host:8000/ws"
 ```
 
+### Multi-device, credentials, and Git
+
+- A single remote broker can host multiple connected main services, and the Android client can now save and switch between multiple paired devices
+- Set `PAIR_SERVER_NAME=My MacBook` in the Mac `.env` to make device names clearer in the app
+- The Android client now stores sessions, workspaces, and trusted credentials per device
+- The main service now supports a device-level credential center and a managed Git worktree root
+- Android now supports:
+  - device-level credential bundles and local skills
+  - per-project bindings for credentials / skills
+  - `@`-triggered context attachment inside a chat session
+  - project Git status, worktree sessions, and temporary merge / rebase sessions
+
 ### Security
 
 - Keep real secrets only in the local `.env`
@@ -249,6 +281,8 @@ $env:BROKER_URL="ws://your-host:8000/ws"
 - `BROKER_OPENAI_API_TOKEN`: bearer auth for broker endpoints
 - `BROKER_RPC_TIMEOUT_MS`: broker RPC timeout
 - `DEVICE_FILE_ROOTS`: device roots exposed to the client
+- `DEVICE_CREDENTIALS_ROOT`: device credential-center root
+- `DEVICE_WORKTREE_ROOT`: managed Git worktree root
 
 ### Example request
 

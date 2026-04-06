@@ -19,12 +19,17 @@ const CODEX_WORKDIR = process.env.CODEX_WORKDIR || process.cwd();
 const CODEX_SANDBOX = process.env.CODEX_SANDBOX || "read-only";
 const CODEX_APPROVAL_POLICY = process.env.CODEX_APPROVAL_POLICY || "never";
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const GIT_BIN = process.env.GIT_BIN || "git";
+const GH_BIN = process.env.GH_BIN || "gh";
 const OPENAI_API_TOKEN = String(process.env.OPENAI_API_TOKEN || "").trim();
 const OPENAI_UPSTREAM_BASE_URL = String(process.env.OPENAI_UPSTREAM_BASE_URL || "https://api.openai.com").trim().replace(/\/+$/, "");
 const OPENAI_UPSTREAM_API_KEY = String(process.env.OPENAI_UPSTREAM_API_KEY || "").trim();
 const OPENAI_FULL_COMPAT = parseBoolean(process.env.OPENAI_FULL_COMPAT);
 const DEVICE_FILE_ROOTS = parseDeviceFileRoots(process.env.DEVICE_FILE_ROOTS);
 const CHAT_TASK_STORE_PATH = process.env.CHAT_TASK_STORE_PATH || path.join(CODEX_HOME, "codexapi-chat-tasks.json");
+const DEVICE_SETTINGS_PATH = process.env.DEVICE_SETTINGS_PATH || path.join(CODEX_HOME, "codexapi-device-settings.json");
+const DEFAULT_CREDENTIALS_ROOT = process.env.DEVICE_CREDENTIALS_ROOT || path.join(CODEX_HOME, "credential-center");
+const DEFAULT_WORKTREE_ROOT = process.env.DEVICE_WORKTREE_ROOT || path.join(CODEX_HOME, "worktrees");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const PAIR_BROKER_URL = process.env.PAIR_BROKER_URL || "ws://localhost:8000/ws";
 const PAIR_CODE_TTL_SECONDS = Number(process.env.PAIR_CODE_TTL_SECONDS || 90);
@@ -67,7 +72,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/config") {
-      return sendJson(res, 200, getConfigPayload());
+      return sendJson(res, 200, await getConfigPayload());
     }
 
     if (req.method === "GET" && url.pathname === "/api/fs/list") {
@@ -85,6 +90,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/fs/upload") {
       const body = await readJsonBody(req);
       return handleFileUpload(body, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/fs/mkdir") {
+      const body = await readJsonBody(req);
+      return handleDirectoryCreate(body, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/fs/transfer") {
@@ -277,11 +287,25 @@ async function streamUiTurnToCallbacks(body, callbacks) {
   const threadId = body.thread_id || null;
   const cwd = resolveWorkspace(body.cwd);
   const yolo = Boolean(body.yolo);
+  const contextPreamble = await buildContextPreamble(body.context_refs || []);
+  const instructionText = String(body.instructions || "").trim();
+  const gitContext = body.git_context && typeof body.git_context === "object"
+    ? Object.entries(body.git_context)
+        .map(([key, value]) => (value == null || value === "" ? null : `${key}: ${value}`))
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const prompt = [
+    instructionText ? `Project/session guidance:\n${instructionText}` : null,
+    gitContext ? `Git context:\n${gitContext}` : null,
+    contextPreamble,
+    body.message
+  ].filter(Boolean).join("\n\n");
 
   const stream = await createCodexTurnStream({
     model,
     threadId,
-    prompt: body.message,
+    prompt,
     cwd,
     yolo
   });
@@ -1542,16 +1566,850 @@ function getHealthPayload() {
   };
 }
 
-function getConfigPayload() {
+async function getConfigPayload() {
+  await deviceSettingsStore.loadPromise;
   return {
     mode: "local_codex_cli",
+    server_name: PAIR_SERVER_NAME,
     codex_model: CODEX_MODEL,
     codex_workdir: CODEX_WORKDIR,
     codex_home: os.homedir(),
+    credentials_root: deviceSettingsStore.credentialsRoot,
+    worktree_root: deviceSettingsStore.worktreeRoot,
     host: HOST,
     port: PORT,
     openai_api_auth_enabled: Boolean(OPENAI_API_TOKEN)
   };
+}
+
+async function getContextCatalogPayload() {
+  await deviceSettingsStore.loadPromise;
+  const credentialsRoot = deviceSettingsStore.credentialsRoot;
+  const bundles = await listCredentialBundles(credentialsRoot);
+  const skills = await listAvailableSkills(credentialsRoot);
+  await writeCredentialCatalog(credentialsRoot, bundles, skills);
+  return {
+    credentials_root: credentialsRoot,
+    worktree_root: deviceSettingsStore.worktreeRoot,
+    bundles,
+    skills
+  };
+}
+
+async function setCredentialsRoot(requestedPath, initialize = false) {
+  const nextRoot = resolveAllowedPath(requestedPath || DEFAULT_CREDENTIALS_ROOT);
+  await deviceSettingsStore.setCredentialsRoot(nextRoot);
+  if (initialize) {
+    await ensureCredentialRoot(nextRoot);
+  }
+  return getContextCatalogPayload();
+}
+
+async function ensureCredentialRoot(rootPath) {
+  const credentialsDir = path.join(rootPath, "credentials");
+  await fs.mkdir(path.join(credentialsDir, "global"), { recursive: true });
+  await fs.mkdir(path.join(credentialsDir, "projects"), { recursive: true });
+  await fs.mkdir(path.join(rootPath, "skills"), { recursive: true });
+  const readmePath = path.join(rootPath, "README.md");
+  const catalogPath = path.join(rootPath, "catalog.json");
+  if (!existsSync(readmePath)) {
+    await fs.writeFile(
+      readmePath,
+      [
+        "# Device Control Center",
+        "",
+        "- `credentials/` 用来存放全局或按项目分类的凭据包。",
+        "- 每个凭据包建议包含 `bundle.json`、`README.md` 和实际的 `.env/.json/.pem` 文件。",
+        "- `skills/` 用来存放本地 skills，每个 skill 目录下放 `SKILL.md`。"
+      ].join("\n"),
+      "utf8"
+    );
+  }
+  if (!existsSync(catalogPath)) {
+    await fs.writeFile(catalogPath, JSON.stringify({ version: 1, bundles: [], skills: [] }, null, 2), "utf8");
+  }
+}
+
+async function writeCredentialCatalog(rootPath, bundles = null, skills = null) {
+  try {
+    const nextBundles = bundles || await listCredentialBundles(rootPath);
+    const nextSkills = skills || await listAvailableSkills(rootPath);
+    await fs.mkdir(rootPath, { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, "catalog.json"),
+      JSON.stringify({ version: 1, bundles: nextBundles, skills: nextSkills, updated_at: new Date().toISOString() }, null, 2),
+      "utf8"
+    );
+  } catch {}
+}
+
+async function createCredentialBundle(body) {
+  await deviceSettingsStore.loadPromise;
+  const credentialsRoot = deviceSettingsStore.credentialsRoot;
+  await ensureCredentialRoot(credentialsRoot);
+  const name = String(body?.name || "").trim();
+  const description = String(body?.description || "").trim();
+  const scope = String(body?.scope || "global").trim().toLowerCase() === "project" ? "project" : "global";
+  const projectHint = String(body?.project_hint || "").trim();
+  if (!name) {
+    throw new Error("`name` is required.");
+  }
+  const slug = slugify(name);
+  const parentDir = scope === "project"
+    ? path.join(credentialsRoot, "credentials", "projects", slugify(projectHint || "shared"))
+    : path.join(credentialsRoot, "credentials", "global");
+  const bundleDir = path.join(parentDir, slug);
+  await fs.mkdir(bundleDir, { recursive: true });
+  const readmePath = path.join(bundleDir, "README.md");
+  const bundleJsonPath = path.join(bundleDir, "bundle.json");
+  if (!existsSync(readmePath)) {
+    await fs.writeFile(
+      readmePath,
+      [
+        `# ${name}`,
+        "",
+        description || "在这里记录这个凭据包包含哪些 key、对应什么环境，以及使用注意事项。",
+        "",
+        "## Files",
+        "",
+        "- 在这个目录内放 `.env`、`.json`、`.pem` 等文件。"
+      ].join("\n"),
+      "utf8"
+    );
+  }
+  const payload = {
+    id: `credential:${toPosixPath(path.relative(path.join(credentialsRoot, "credentials"), bundleDir))}`,
+    name,
+    description,
+    scope,
+    project_hint: projectHint || null
+  };
+  await fs.writeFile(bundleJsonPath, JSON.stringify(payload, null, 2), "utf8");
+  const bundles = await listCredentialBundles(credentialsRoot);
+  const skills = await listAvailableSkills(credentialsRoot);
+  await writeCredentialCatalog(credentialsRoot, bundles, skills);
+  return bundles.find((item) => item.id === payload.id) || payload;
+}
+
+async function listCredentialBundles(rootPath) {
+  const credentialsDir = path.join(rootPath, "credentials");
+  if (!existsSync(credentialsDir)) {
+    return [];
+  }
+  const bundleFiles = await findFilesByName(credentialsDir, "bundle.json", 4);
+  const bundles = [];
+  for (const bundleJsonPath of bundleFiles) {
+    try {
+      const bundleDir = path.dirname(bundleJsonPath);
+      const raw = await fs.readFile(bundleJsonPath, "utf8");
+      const parsed = JSON.parse(raw);
+      const files = await fs.readdir(bundleDir, { withFileTypes: true });
+      const payloadFiles = files
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter((name) => name !== "bundle.json" && name !== "README.md")
+        .map((name) => path.join(bundleDir, name))
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      const readmePath = existsSync(path.join(bundleDir, "README.md")) ? path.join(bundleDir, "README.md") : null;
+      bundles.push({
+        id: String(parsed?.id || `credential:${toPosixPath(path.relative(credentialsDir, bundleDir))}`),
+        name: String(parsed?.name || path.basename(bundleDir)),
+        description: String(parsed?.description || await readFirstMeaningfulLine(readmePath) || "").trim(),
+        scope: String(parsed?.scope || inferBundleScope(rootPath, bundleDir)),
+        project_hint: parsed?.project_hint ? String(parsed.project_hint) : inferBundleProjectHint(rootPath, bundleDir),
+        folder_path: bundleDir,
+        readme_path: readmePath,
+        files: payloadFiles
+      });
+    } catch {}
+  }
+  return bundles.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+async function listAvailableSkills(credentialsRoot) {
+  const results = [];
+  const sources = [
+    { source: "credentials_root", root: path.join(credentialsRoot, "skills") },
+    { source: "codex_home", root: path.join(CODEX_HOME, "skills") }
+  ];
+  for (const item of sources) {
+    if (!existsSync(item.root)) continue;
+    const skillFiles = await findFilesByName(item.root, "SKILL.md", 5);
+    for (const skillPath of skillFiles) {
+      const skillDir = path.dirname(skillPath);
+      results.push({
+        id: `${item.source}:${toPosixPath(path.relative(item.root, skillDir))}`,
+        name: path.basename(skillDir),
+        description: await readFirstMeaningfulLine(skillPath),
+        source: item.source,
+        skill_path: skillPath,
+        folder_path: skillDir
+      });
+    }
+  }
+  return results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+async function buildContextPreamble(contextRefs = []) {
+  if (!Array.isArray(contextRefs) || contextRefs.length === 0) {
+    return "";
+  }
+  const catalog = await getContextCatalogPayload();
+  const lines = [
+    "Additional local context is available on this device.",
+    "Use the referenced files/skills locally when helpful, and avoid printing raw secret values unless explicitly needed."
+  ];
+  for (const ref of contextRefs) {
+    const kind = String(ref?.kind || "").trim();
+    const id = String(ref?.id || "").trim();
+    if (!kind || !id) continue;
+    if (kind === "credential") {
+      const bundle = catalog.bundles.find((item) => item.id === id);
+      if (!bundle) continue;
+      lines.push(
+        [
+          `Credential bundle: ${bundle.name}`,
+          bundle.description ? `Description: ${bundle.description}` : null,
+          `Folder: ${bundle.folder_path}`,
+          bundle.readme_path ? `README: ${bundle.readme_path}` : null,
+          bundle.files?.length ? `Files: ${bundle.files.join(", ")}` : null
+        ].filter(Boolean).join("\n")
+      );
+    }
+    if (kind === "skill") {
+      const skill = catalog.skills.find((item) => item.id === id);
+      if (!skill) continue;
+      lines.push(
+        [
+          `Local skill: ${skill.name}`,
+          skill.description ? `Description: ${skill.description}` : null,
+          `Skill file: ${skill.skill_path}`
+        ].filter(Boolean).join("\n")
+      );
+    }
+  }
+  return lines.join("\n\n");
+}
+
+async function inspectGitTarget(targetPath) {
+  const resolvedTarget = resolveWorkspace(targetPath || CODEX_WORKDIR);
+  const repoRoot = await tryResolveRepoRoot(resolvedTarget);
+  if (!repoRoot) {
+    return {
+      ok: true,
+      is_repo: false,
+      inspected_path: resolvedTarget
+    };
+  }
+  const relativePath = toPosixPath(path.relative(repoRoot, resolvedTarget));
+  const currentBranch = (await runGit(["-C", repoRoot, "branch", "--show-current"])).stdout.trim();
+  const headSha = (await runGit(["-C", repoRoot, "rev-parse", "--short", "HEAD"])).stdout.trim();
+  const defaultBranch = await resolveDefaultBranch(repoRoot, currentBranch);
+  const statusOutput = (await runGit(["-C", repoRoot, "status", "--porcelain=v1", "--branch"])).stdout;
+  const worktrees = await listGitWorktrees(repoRoot);
+  return {
+    ok: true,
+    is_repo: true,
+    inspected_path: resolvedTarget,
+    repo_root: repoRoot,
+    relative_path: relativePath === "." ? "" : relativePath,
+    current_branch: currentBranch,
+    default_branch: defaultBranch,
+    head_sha: headSha,
+    status: parseGitStatus(statusOutput),
+    remotes: await listGitRemotes(repoRoot),
+    remote_details: await listGitRemoteDetails(repoRoot),
+    worktrees
+  };
+}
+
+async function listGitBranches(repoRootRaw) {
+  const repoRoot = await requireRepoRoot(repoRootRaw);
+  const currentBranch = (await runGit(["-C", repoRoot, "branch", "--show-current"])).stdout.trim();
+  const defaultBranch = await resolveDefaultBranch(repoRoot, currentBranch);
+  const localRaw = (await runGit([
+    "-C",
+    repoRoot,
+    "for-each-ref",
+    "--format=%(refname:short)%x1f%(objectname:short)%x1f%(upstream:short)%x1f%(HEAD)",
+    "refs/heads"
+  ])).stdout;
+  const remoteRaw = (await runGit([
+    "-C",
+    repoRoot,
+    "for-each-ref",
+    "--format=%(refname:short)%x1f%(objectname:short)",
+    "refs/remotes"
+  ])).stdout;
+  return {
+    repo_root: repoRoot,
+    current_branch: currentBranch,
+    default_branch: defaultBranch,
+    local: localRaw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [name, sha, upstream, head] = line.split("\u001f");
+        return {
+          name,
+          sha,
+          upstream: upstream || null,
+          current: head === "*",
+          is_default: name === defaultBranch
+        };
+      }),
+    remote: remoteRaw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [name, sha] = line.split("\u001f");
+        return { name, sha };
+      })
+  };
+}
+
+async function getGitLog(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const ref = normalizeGitRef(body?.ref || "HEAD");
+  const limit = clampNumber(Number(body?.limit || 30), 1, 100);
+  const output = (await runGit([
+    "-C",
+    repoRoot,
+    "log",
+    ref || "HEAD",
+    `--max-count=${limit}`,
+    "--date=iso-strict",
+    "--pretty=format:%H%x1f%h%x1f%ad%x1f%an%x1f%s%x1e"
+  ])).stdout;
+  const commits = output
+    .split("\u001e")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [sha, shortSha, date, author, subject] = entry.split("\u001f");
+      return { sha, short_sha: shortSha, date, author, subject };
+    });
+  return { repo_root: repoRoot, commits };
+}
+
+async function initGitRepository(body) {
+  const targetPath = resolveWorkspace(body?.path || CODEX_WORKDIR);
+  await fs.mkdir(targetPath, { recursive: true });
+  const initialBranch = normalizeGitRef(body?.initial_branch || "main") || "main";
+  await runGit(["init", "-b", initialBranch, targetPath]);
+  return inspectGitTarget(targetPath);
+}
+
+async function createGithubRepository(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const name = String(body?.name || "").trim();
+  if (!name) {
+    throw new Error("`name` is required.");
+  }
+  const visibility = String(body?.visibility || "private").trim().toLowerCase() === "public" ? "--public" : "--private";
+  const remoteName = String(body?.remote || "origin").trim() || "origin";
+  const result = await runGh(["repo", "create", name, "--source", repoRoot, "--remote", remoteName, visibility, "--push"]);
+  const inspect = await inspectGitTarget(repoRoot);
+  const remoteDetails = Array.isArray(inspect?.remote_details) ? inspect.remote_details : [];
+  const remoteUrl = remoteDetails.find((item) => item.name === remoteName)?.push_url || "";
+  return {
+    ok: true,
+    repo_root: repoRoot,
+    name,
+    remote: remoteName,
+    remote_url: remoteUrl,
+    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
+  };
+}
+
+async function bindGithubRepository(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const repository = normalizeGithubRepository(body?.repository);
+  if (!repository) {
+    throw new Error("`repository` must be provided as owner/name or a GitHub URL.");
+  }
+  const protocol = String(body?.protocol || "ssh").trim().toLowerCase() === "https" ? "https" : "ssh";
+  const remoteName = String(body?.remote || "origin").trim() || "origin";
+  const remoteUrl = buildGithubRemoteUrl(repository, protocol);
+  const existingRemotes = await listGitRemoteDetails(repoRoot);
+  if (existingRemotes.some((entry) => entry.name === remoteName)) {
+    await runGit(["-C", repoRoot, "remote", "set-url", remoteName, remoteUrl]);
+  } else {
+    await runGit(["-C", repoRoot, "remote", "add", remoteName, remoteUrl]);
+  }
+  const fetchResult = await runGit(["-C", repoRoot, "fetch", remoteName], { allowNonZero: true });
+  const ghResult = await runGh(["repo", "set-default", repository], { cwd: repoRoot, allowNonZero: true });
+  return {
+    ok: true,
+    repo_root: repoRoot,
+    repository,
+    remote: remoteName,
+    remote_url: remoteUrl,
+    output: [
+      `Remote ${remoteName} -> ${remoteUrl}`,
+      fetchResult.stdout,
+      fetchResult.stderr,
+      ghResult.stdout,
+      ghResult.stderr
+    ].filter(Boolean).join("\n").trim()
+  };
+}
+
+async function getGithubAuthStatus() {
+  const result = await runGh(["auth", "status"], { allowNonZero: true });
+  return {
+    ok: result.code === 0,
+    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
+  };
+}
+
+async function createGitWorktree(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  await deviceSettingsStore.loadPromise;
+  const branch = normalizeGitRef(body?.branch);
+  if (!branch) {
+    throw new Error("`branch` is required.");
+  }
+  const baseBranch = normalizeGitRef(body?.base_branch) || await resolveDefaultBranch(repoRoot);
+  const sessionId = normalizeStoreId(body?.session_id) || `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+  const relativePath = String(body?.relative_path || "").trim();
+  const worktreeDir = path.join(deviceSettingsStore.worktreeRoot, slugify(path.basename(repoRoot)), `${slugify(sessionId)}-${slugify(branch)}`);
+  await fs.mkdir(path.dirname(worktreeDir), { recursive: true });
+  const exists = await gitBranchExists(repoRoot, branch);
+  if (exists) {
+    await runGit(["-C", repoRoot, "worktree", "add", worktreeDir, branch]);
+  } else {
+    await runGit(["-C", repoRoot, "worktree", "add", "-b", branch, worktreeDir, baseBranch]);
+  }
+  return {
+    ok: true,
+    repo_root: repoRoot,
+    branch,
+    base_branch: baseBranch,
+    worktree_path: worktreeDir,
+    exec_path: relativePath ? path.join(worktreeDir, relativePath) : worktreeDir
+  };
+}
+
+async function removeGitWorktree(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const worktreePath = resolveWorkspace(body?.worktree_path || "");
+  await runGit(["-C", repoRoot, "worktree", "remove", "--force", worktreePath]);
+  const branch = normalizeGitRef(body?.branch);
+  if (branch && parseBoolean(body?.delete_branch)) {
+    await runGit(["-C", repoRoot, "branch", "-D", branch], { allowNonZero: true });
+  }
+  return {
+    ok: true,
+    repo_root: repoRoot,
+    worktree_path: worktreePath,
+    branch: branch || null
+  };
+}
+
+async function pushGitBranch(body) {
+  const cwd = resolveWorkspace(body?.cwd || body?.repo_root || CODEX_WORKDIR);
+  const branch = normalizeGitRef(body?.branch);
+  if (!branch) {
+    throw new Error("`branch` is required.");
+  }
+  const remote = String(body?.remote || "origin").trim() || "origin";
+  const args = ["-C", cwd, "push", "-u", remote, branch];
+  if (parseBoolean(body?.force)) {
+    args.splice(3, 0, "--force-with-lease");
+  }
+  const result = await runGit(args);
+  return {
+    ok: true,
+    branch,
+    remote,
+    output: result.stdout.trim() || result.stderr.trim()
+  };
+}
+
+async function createPullRequest(body) {
+  const cwd = resolveWorkspace(body?.cwd || body?.repo_root || CODEX_WORKDIR);
+  const base = normalizeGitRef(body?.base);
+  const head = normalizeGitRef(body?.head);
+  const title = String(body?.title || "").trim();
+  const prBody = String(body?.body || "").trim();
+  if (!base || !head || !title) {
+    throw new Error("`base`, `head`, and `title` are required.");
+  }
+  const args = ["pr", "create", "--base", base, "--head", head, "--title", title];
+  if (prBody) {
+    args.push("--body", prBody);
+  } else {
+    args.push("--fill");
+  }
+  if (parseBoolean(body?.draft)) {
+    args.push("--draft");
+  }
+  const result = await runGh(args, { cwd });
+  return {
+    ok: true,
+    url: result.stdout.trim().split(/\r?\n/).find((line) => /^https?:\/\//.test(line.trim())) || result.stdout.trim(),
+    output: result.stdout.trim()
+  };
+}
+
+async function mergePullRequest(body) {
+  const cwd = resolveWorkspace(body?.cwd || body?.repo_root || CODEX_WORKDIR);
+  const target = String(body?.pull_request || "").trim();
+  if (!target) {
+    throw new Error("`pull_request` is required.");
+  }
+  const method = String(body?.method || "merge").trim().toLowerCase();
+  const modeArg = method === "squash" ? "--squash" : method === "rebase" ? "--rebase" : "--merge";
+  const args = ["pr", "merge", target, modeArg];
+  if (parseBoolean(body?.delete_branch)) {
+    args.push("--delete-branch");
+  }
+  if (parseBoolean(body?.admin)) {
+    args.push("--admin");
+  }
+  const result = await runGh(args, { cwd });
+  return {
+    ok: true,
+    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
+  };
+}
+
+async function prepareMergeOperation(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const sourceBranch = normalizeGitRef(body?.source_branch);
+  const targetBranch = normalizeGitRef(body?.target_branch) || await resolveDefaultBranch(repoRoot);
+  if (!sourceBranch) {
+    throw new Error("`source_branch` is required.");
+  }
+  const opBranch = `codex-merge/${slugify(sourceBranch)}-into-${slugify(targetBranch)}-${Date.now().toString(36)}`;
+  const worktree = await createGitWorktree({
+    repo_root: repoRoot,
+    branch: opBranch,
+    base_branch: targetBranch,
+    session_id: body?.session_id,
+    relative_path: body?.relative_path
+  });
+  return {
+    ...worktree,
+    operation: "merge",
+    source_branch: sourceBranch,
+    target_branch: targetBranch,
+    prompt: [
+      `请在当前临时 worktree 中把分支 \`${sourceBranch}\` 合入 \`${targetBranch}\`。`,
+      "要求：",
+      "1. 先检查 git status / branch / log，确认当前临时分支基于目标分支。",
+      "2. 执行 merge，并尽量自动解决冲突。",
+      "3. 如果遇到需要人工确认的冲突，停下来说明原因、涉及文件和建议方案。",
+      "4. 不要删除当前 worktree；完成后汇报是否可以执行“完成合入并清理”。"
+    ].join("\n")
+  };
+}
+
+async function prepareRebaseOperation(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const sourceBranch = normalizeGitRef(body?.source_branch);
+  const targetBranch = normalizeGitRef(body?.target_branch) || await resolveDefaultBranch(repoRoot);
+  if (!sourceBranch) {
+    throw new Error("`source_branch` is required.");
+  }
+  const opBranch = `codex-rebase/${slugify(sourceBranch)}-onto-${slugify(targetBranch)}-${Date.now().toString(36)}`;
+  const worktree = await createGitWorktree({
+    repo_root: repoRoot,
+    branch: opBranch,
+    base_branch: sourceBranch,
+    session_id: body?.session_id,
+    relative_path: body?.relative_path
+  });
+  return {
+    ...worktree,
+    operation: "rebase",
+    source_branch: sourceBranch,
+    target_branch: targetBranch,
+    prompt: [
+      `请在当前临时 worktree 中把分支 \`${sourceBranch}\` rebase 到 \`${targetBranch}\` 上。`,
+      "要求：",
+      "1. 先检查 git status / branch / log，确认当前临时分支来自源分支。",
+      "2. 执行 rebase，并尽量自动解决冲突。",
+      "3. 如果遇到需要人工确认的冲突，停下来说明原因、涉及文件和建议方案。",
+      "4. 不要删除当前 worktree；完成后汇报是否适合推回源分支。"
+    ].join("\n")
+  };
+}
+
+async function finalizeMergeOperation(body) {
+  const repoRoot = await requireRepoRoot(body?.repo_root || body?.path || CODEX_WORKDIR);
+  const targetBranch = normalizeGitRef(body?.target_branch);
+  const operationBranch = normalizeGitRef(body?.operation_branch);
+  if (!targetBranch || !operationBranch) {
+    throw new Error("`target_branch` and `operation_branch` are required.");
+  }
+  await ensureGitWorkingTreeClean(repoRoot);
+  const currentBranch = (await runGit(["-C", repoRoot, "branch", "--show-current"])).stdout.trim();
+  if (currentBranch !== targetBranch) {
+    await runGit(["-C", repoRoot, "checkout", targetBranch]);
+  }
+  await runGit(["-C", repoRoot, "merge", "--ff-only", operationBranch]);
+  return inspectGitTarget(repoRoot);
+}
+
+async function findFilesByName(rootPath, fileName, maxDepth = 4) {
+  const results = [];
+  async function walk(currentPath, depth) {
+    if (depth > maxDepth || !existsSync(currentPath)) return;
+    const entries = await fs.readdir(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const nextPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        await walk(nextPath, depth + 1);
+      } else if (entry.isFile() && entry.name === fileName) {
+        results.push(nextPath);
+      }
+    }
+  }
+  await walk(rootPath, 0);
+  return results;
+}
+
+async function readFirstMeaningfulLine(filePath) {
+  if (!filePath || !existsSync(filePath)) return "";
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^#+\s*/, ""))
+      .find(Boolean) || "";
+  } catch {
+    return "";
+  }
+}
+
+function inferBundleScope(rootPath, bundleDir) {
+  const rel = toPosixPath(path.relative(path.join(rootPath, "credentials"), bundleDir));
+  return rel.startsWith("projects/") ? "project" : "global";
+}
+
+function inferBundleProjectHint(rootPath, bundleDir) {
+  const rel = toPosixPath(path.relative(path.join(rootPath, "credentials"), bundleDir));
+  if (!rel.startsWith("projects/")) return null;
+  const [, projectHint] = rel.split("/");
+  return projectHint || null;
+}
+
+async function runGit(args, options = {}) {
+  return runCommand(GIT_BIN, args, options);
+}
+
+async function runGh(args, options = {}) {
+  return runCommand(GH_BIN, args, options);
+}
+
+async function runCommand(bin, args, options = {}) {
+  const cwd = options.cwd || CODEX_WORKDIR;
+  const env = options.env || process.env;
+  const allowNonZero = Boolean(options.allowNonZero);
+  const timeoutMs = Number(options.timeoutMs || 60_000);
+  return await new Promise((resolve, reject) => {
+    const child = spawn(bin, args, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32"
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try {
+          child.kill("SIGTERM");
+        } catch {}
+        reject(new Error(`${bin} ${args.join(" ")} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0 || allowNonZero) {
+        resolve({ code, stdout, stderr });
+      } else {
+        reject(new Error((stderr || stdout || `${bin} exited with code ${code}`).trim()));
+      }
+    });
+  });
+}
+
+async function tryResolveRepoRoot(targetPath) {
+  const result = await runGit(["-C", targetPath, "rev-parse", "--show-toplevel"], { allowNonZero: true });
+  return result.code === 0 ? result.stdout.trim() : null;
+}
+
+async function requireRepoRoot(targetPath) {
+  const repoRoot = await tryResolveRepoRoot(resolveWorkspace(targetPath || CODEX_WORKDIR));
+  if (!repoRoot) {
+    throw new Error("Selected path is not inside a Git repository.");
+  }
+  return repoRoot;
+}
+
+async function resolveDefaultBranch(repoRoot, fallback = "") {
+  const remoteHead = await runGit(["-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"], { allowNonZero: true });
+  if (remoteHead.code === 0) {
+    return remoteHead.stdout.trim().replace(/^refs\/remotes\/origin\//, "");
+  }
+  if (fallback) return fallback;
+  const initDefault = await runGit(["config", "--global", "init.defaultBranch"], { allowNonZero: true });
+  return initDefault.stdout.trim() || "main";
+}
+
+async function gitBranchExists(repoRoot, branch) {
+  const result = await runGit(["-C", repoRoot, "show-ref", "--verify", `refs/heads/${branch}`], { allowNonZero: true });
+  return result.code === 0;
+}
+
+async function listGitRemotes(repoRoot) {
+  const details = await listGitRemoteDetails(repoRoot);
+  return details.map((entry) => entry.name);
+}
+
+async function listGitRemoteDetails(repoRoot) {
+  const result = await runGit(["-C", repoRoot, "remote", "-v"], { allowNonZero: true });
+  const byName = new Map();
+  for (const raw of result.stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+    if (!match) continue;
+    const [, name, url, kind] = match;
+    const current = byName.get(name) || { name, fetch_url: "", push_url: "" };
+    if (kind === "fetch") current.fetch_url = url;
+    if (kind === "push") current.push_url = url;
+    byName.set(name, current);
+  }
+  return [...byName.values()];
+}
+
+async function listGitWorktrees(repoRoot) {
+  const result = await runGit(["-C", repoRoot, "worktree", "list", "--porcelain"], { allowNonZero: true });
+  const entries = [];
+  let current = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!line.trim()) {
+      if (current) entries.push(current);
+      current = null;
+      continue;
+    }
+    if (line.startsWith("worktree ")) {
+      if (current) entries.push(current);
+      current = { path: line.slice("worktree ".length) };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("branch ")) current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+    if (line.startsWith("HEAD ")) current.head = line.slice("HEAD ".length);
+    if (line === "bare") current.bare = true;
+    if (line === "detached") current.detached = true;
+    if (line === "locked") current.locked = true;
+    if (line === "prunable") current.prunable = true;
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+function normalizeGithubRepository(value) {
+  const raw = String(value || "").trim().replace(/\.git$/i, "");
+  if (!raw) return null;
+  const sshMatch = raw.match(/^git@github\.com:(.+)$/i);
+  if (sshMatch) return sshMatch[1].replace(/^\/+/, "").replace(/\/+$/, "");
+  const httpsMatch = raw.match(/^https?:\/\/github\.com\/(.+)$/i);
+  if (httpsMatch) return httpsMatch[1].replace(/^\/+/, "").replace(/\/+$/, "");
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) return raw;
+  return null;
+}
+
+function buildGithubRemoteUrl(repository, protocol) {
+  return protocol === "https"
+    ? `https://github.com/${repository}.git`
+    : `git@github.com:${repository}.git`;
+}
+
+function parseGitStatus(raw) {
+  const payload = {
+    branch_line: "",
+    ahead: 0,
+    behind: 0,
+    staged: 0,
+    modified: 0,
+    deleted: 0,
+    renamed: 0,
+    untracked: 0,
+    conflicts: 0,
+    is_dirty: false
+  };
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line) continue;
+    if (line.startsWith("##")) {
+      payload.branch_line = line.slice(3);
+      const aheadMatch = line.match(/ahead (\d+)/);
+      const behindMatch = line.match(/behind (\d+)/);
+      payload.ahead = aheadMatch ? Number(aheadMatch[1]) : 0;
+      payload.behind = behindMatch ? Number(behindMatch[1]) : 0;
+      continue;
+    }
+    payload.is_dirty = true;
+    const x = line[0];
+    const y = line[1];
+    if (x === "U" || y === "U") payload.conflicts += 1;
+    if (x && x !== " " && x !== "?") payload.staged += 1;
+    if (y === "M" || x === "M") payload.modified += 1;
+    if (y === "D" || x === "D") payload.deleted += 1;
+    if (y === "R" || x === "R") payload.renamed += 1;
+    if (x === "?" && y === "?") payload.untracked += 1;
+  }
+  return payload;
+}
+
+async function ensureGitWorkingTreeClean(repoRoot) {
+  const status = parseGitStatus((await runGit(["-C", repoRoot, "status", "--porcelain=v1", "--branch"])).stdout);
+  if (status.is_dirty) {
+    throw new Error("Repository has uncommitted changes. Please commit or stash them first.");
+  }
+}
+
+function normalizeGitRef(value) {
+  const ref = String(value || "").trim();
+  if (!ref) return null;
+  if (ref.startsWith("-") || ref.includes("..") || ref.includes("\\") || ref.endsWith("/") || ref.endsWith(".")) {
+    return null;
+  }
+  return /^[a-zA-Z0-9._/-]+$/.test(ref) ? ref : null;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+function toPosixPath(value) {
+  return String(value || "").split(path.sep).join("/");
 }
 
 function requiresOpenAiAuth(pathname) {
@@ -1684,6 +2542,11 @@ async function handleFileUpload(body, res) {
   return sendJson(res, 200, result);
 }
 
+async function handleDirectoryCreate(body, res) {
+  const result = await createDirectory(body);
+  return sendJson(res, 200, result);
+}
+
 async function handleFileTransfer(body, res) {
   const result = await createFileTransfer(body);
   return sendJson(res, 200, result);
@@ -1716,6 +2579,25 @@ async function uploadFile(body) {
     path: filePath,
     size: stats.size,
     modified_at: stats.mtime.toISOString()
+  };
+}
+
+async function createDirectory(body) {
+  const directory = resolveAllowedPath(body?.directory || DEVICE_FILE_ROOTS[0] || os.homedir());
+  const name = sanitizeFileName(body?.name);
+  if (!name) {
+    throw new Error("`name` is required.");
+  }
+  const dirStats = await fs.stat(directory);
+  if (!dirStats.isDirectory()) {
+    throw new Error("Directory target must be a directory.");
+  }
+  const targetPath = path.join(directory, name);
+  await fs.mkdir(targetPath);
+  return {
+    ok: true,
+    name,
+    path: targetPath
   };
 }
 
@@ -2087,7 +2969,22 @@ class PairServerAgent {
     const method = msg.method;
     try {
       if (method === "config.get") {
-        this.sendRpcResult(msg, getConfigPayload());
+        this.sendRpcResult(msg, await getConfigPayload());
+        return;
+      }
+
+      if (method === "context.catalog") {
+        this.sendRpcResult(msg, await getContextCatalogPayload());
+        return;
+      }
+
+      if (method === "context.root.set") {
+        this.sendRpcResult(msg, await setCredentialsRoot(msg.body?.path, Boolean(msg.body?.initialize)));
+        return;
+      }
+
+      if (method === "context.bundle.create") {
+        this.sendRpcResult(msg, await createCredentialBundle(msg.body || {}));
         return;
       }
 
@@ -2108,6 +3005,11 @@ class PairServerAgent {
 
       if (method === "fs.upload") {
         this.sendRpcResult(msg, await uploadFile(msg.body || {}));
+        return;
+      }
+
+      if (method === "fs.mkdir") {
+        this.sendRpcResult(msg, await createDirectory(msg.body || {}));
         return;
       }
 
@@ -2163,6 +3065,81 @@ class PairServerAgent {
 
       if (method === "chat.sync") {
         this.sendRpcResult(msg, { tasks: await this.chatTaskStore.listClientTasks(msg.client_id) });
+        return;
+      }
+
+      if (method === "git.inspect") {
+        this.sendRpcResult(msg, await inspectGitTarget(msg.body?.path || msg.body?.repo_root || CODEX_WORKDIR));
+        return;
+      }
+
+      if (method === "git.branches") {
+        this.sendRpcResult(msg, await listGitBranches(msg.body?.repo_root || msg.body?.path || CODEX_WORKDIR));
+        return;
+      }
+
+      if (method === "git.log") {
+        this.sendRpcResult(msg, await getGitLog(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.repo.init") {
+        this.sendRpcResult(msg, await initGitRepository(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.github.status") {
+        this.sendRpcResult(msg, await getGithubAuthStatus());
+        return;
+      }
+
+      if (method === "git.github.create") {
+        this.sendRpcResult(msg, await createGithubRepository(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.github.bind") {
+        this.sendRpcResult(msg, await bindGithubRepository(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.worktree.create") {
+        this.sendRpcResult(msg, await createGitWorktree(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.worktree.remove") {
+        this.sendRpcResult(msg, await removeGitWorktree(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.push") {
+        this.sendRpcResult(msg, await pushGitBranch(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.pr.create") {
+        this.sendRpcResult(msg, await createPullRequest(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.pr.merge") {
+        this.sendRpcResult(msg, await mergePullRequest(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.operation.prepare_merge") {
+        this.sendRpcResult(msg, await prepareMergeOperation(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.operation.prepare_rebase") {
+        this.sendRpcResult(msg, await prepareRebaseOperation(msg.body || {}));
+        return;
+      }
+
+      if (method === "git.operation.finalize_merge") {
+        this.sendRpcResult(msg, await finalizeMergeOperation(msg.body || {}));
         return;
       }
 
@@ -2373,6 +3350,50 @@ class TrustedDeviceStore {
   }
 }
 
+class DeviceSettingsStore {
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.state = {
+      credentialsRoot: resolveDevicePath(DEFAULT_CREDENTIALS_ROOT),
+      worktreeRoot: resolveWorkspace(DEFAULT_WORKTREE_ROOT)
+    };
+    this.loadPromise = this.load();
+  }
+
+  get credentialsRoot() {
+    return this.state.credentialsRoot;
+  }
+
+  get worktreeRoot() {
+    return this.state.worktreeRoot;
+  }
+
+  async load() {
+    try {
+      const raw = await fs.readFile(this.filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      this.state = {
+        credentialsRoot: resolveDevicePath(parsed?.credentialsRoot || DEFAULT_CREDENTIALS_ROOT),
+        worktreeRoot: resolveWorkspace(parsed?.worktreeRoot || DEFAULT_WORKTREE_ROOT)
+      };
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await this.save();
+    }
+  }
+
+  async save() {
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), "utf8");
+  }
+
+  async setCredentialsRoot(nextPath) {
+    this.state.credentialsRoot = resolveAllowedPath(nextPath || DEFAULT_CREDENTIALS_ROOT);
+    await this.save();
+    return this.state.credentialsRoot;
+  }
+}
+
 class ChatTaskStore {
   constructor(filePath) {
     this.filePath = filePath;
@@ -2385,6 +3406,21 @@ class ChatTaskStore {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw);
       this.state.tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+      const now = new Date().toISOString();
+      let changed = false;
+      this.state.tasks = this.state.tasks.map((task) => {
+        if (task?.status !== "running") return task;
+        changed = true;
+        return {
+          ...task,
+          status: "error",
+          error: task?.error || "service restarted before the request completed",
+          updatedAt: now
+        };
+      });
+      if (changed) {
+        await this.save();
+      }
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
       await this.save();
@@ -2479,6 +3515,7 @@ function dedupeTrustedDevices(devices) {
   return [...passthrough, ...byClientInstallationId.values()];
 }
 
+const deviceSettingsStore = new DeviceSettingsStore(DEVICE_SETTINGS_PATH);
 const trustStore = new TrustedDeviceStore(TRUST_STORE_PATH);
 const chatTaskStore = new ChatTaskStore(CHAT_TASK_STORE_PATH);
 pairAgent = new PairServerAgent({
