@@ -1,0 +1,17 @@
+{
+  "name": "Codex Connect Edge",
+  "short_name": "Codex Edge",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11161b",
+  "theme_color": "#172026",
+  "description": "Phone-first Codex client backed by a Cloudflare Worker relay.",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

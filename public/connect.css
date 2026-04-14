@@ -27,8 +27,27 @@
   padding: 18px;
 }
 
+.connect-main-card,
+.connect-phone-card {
+  min-height: 100%;
+}
+
+.card-kicker {
+  font: 700 11px/1.2 "SF Pro Text", -apple-system, "Helvetica Neue", sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
 .connect-card h2 {
-  margin-bottom: 14px;
+  margin-bottom: 10px;
+}
+
+.card-copy {
+  margin: 0 0 14px;
+  color: var(--muted);
+  max-width: 56ch;
 }
 
 .connect-card .field-label {
@@ -53,10 +72,96 @@
   color: var(--muted);
 }
 
+.code-countdown {
+  margin-top: 6px;
+  font: 600 13px/1.4 "SF Pro Text", -apple-system, "Helvetica Neue", sans-serif;
+  color: #11342d;
+}
+
+.status-pills {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.status-pill {
+  border: 1px solid rgba(17, 52, 45, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px 14px;
+}
+
+.status-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
 .row {
   display: flex;
   gap: 10px;
   margin: 12px 0;
+}
+
+.phone-entry {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.qr-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(17, 52, 45, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px;
+}
+
+.qr-image {
+  display: block;
+  width: 100%;
+  max-width: 216px;
+  aspect-ratio: 1;
+  object-fit: contain;
+}
+
+.phone-actions {
+  min-width: 0;
+}
+
+.setup-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #11342d;
+}
+
+.setup-list li + li {
+  margin-top: 6px;
+}
+
+.install-tips {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.install-tips > div {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.tip-label {
+  min-width: 56px;
+  font-weight: 700;
+  color: #11342d;
 }
 
 .payload-input {
@@ -95,5 +200,17 @@
   .row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .phone-entry {
+    grid-template-columns: 1fr;
+  }
+
+  .qr-panel {
+    max-width: 240px;
+  }
+
+  .status-pills {
+    grid-template-columns: 1fr;
   }
 }

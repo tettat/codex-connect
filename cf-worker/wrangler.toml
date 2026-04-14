@@ -1,0 +1,15 @@
+name = "codex-connect-edge"
+main = "src/index.js"
+compatibility_date = "2025-04-05"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "BROKER"
+class_name = "BrokerRelay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BrokerRelay"]

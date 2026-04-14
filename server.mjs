@@ -38,6 +38,8 @@ const PAIR_SERVER_NAME = process.env.PAIR_SERVER_NAME || `${os.hostname()}-${pro
 const TRUST_STORE_PATH = process.env.TRUST_STORE_PATH || path.join(CODEX_HOME, "codexapi-broker-state.json");
 const CODE_LINK_DEFAULT_TTL_SECONDS = 300;
 const CODE_LINK_MAX_TTL_SECONDS = 3600;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const FILE_UPLOAD_CHUNK_TTL_MS = 15 * 60 * 1000;
 const codeLinks = new Map();
 let pairAgent = null;
 
@@ -2567,7 +2569,7 @@ async function uploadFile(body) {
     throw new Error("Upload target must be a directory.");
   }
   const buffer = Buffer.from(dataBase64, "base64");
-  if (buffer.length > 10 * 1024 * 1024) {
+  if (buffer.length > MAX_UPLOAD_BYTES) {
     throw new Error("Upload is too large. Max 10 MB per transfer.");
   }
   const filePath = path.join(directory, name);
@@ -2815,6 +2817,7 @@ class PairServerAgent {
     this.reconnectTimer = null;
     this.rotateTimer = null;
     this.lastError = null;
+    this.pendingUploads = new Map();
   }
 
   async start() {
@@ -2858,6 +2861,7 @@ class PairServerAgent {
         this.currentCode = null;
         this.currentCodeExpiresAt = null;
         this.failAllPending("broker connection closed");
+        this.cleanupFileUploads({ all: true }).catch(() => {});
         if (!settled) {
           settled = true;
           reject(new Error("broker connection closed"));
@@ -3005,6 +3009,26 @@ class PairServerAgent {
 
       if (method === "fs.upload") {
         this.sendRpcResult(msg, await uploadFile(msg.body || {}));
+        return;
+      }
+
+      if (method === "fs.upload.begin") {
+        this.sendRpcResult(msg, await this.beginFileUpload(msg.body || {}));
+        return;
+      }
+
+      if (method === "fs.upload.chunk") {
+        this.sendRpcResult(msg, await this.appendFileUploadChunk(msg.body || {}));
+        return;
+      }
+
+      if (method === "fs.upload.commit") {
+        this.sendRpcResult(msg, await this.commitFileUpload(msg.body || {}));
+        return;
+      }
+
+      if (method === "fs.upload.abort") {
+        this.sendRpcResult(msg, await this.abortFileUpload(msg.body || {}));
         return;
       }
 
@@ -3169,6 +3193,131 @@ class PairServerAgent {
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  async cleanupFileUploads({ all = false } = {}) {
+    const now = Date.now();
+    for (const [uploadId, upload] of this.pendingUploads) {
+      if (!all && now - upload.updatedAt < FILE_UPLOAD_CHUNK_TTL_MS) {
+        continue;
+      }
+      this.pendingUploads.delete(uploadId);
+      await fs.rm(upload.tempPath, { force: true }).catch(() => {});
+    }
+  }
+
+  async beginFileUpload(body) {
+    await this.cleanupFileUploads();
+    const directory = resolveAllowedPath(body?.directory || DEVICE_FILE_ROOTS[0] || os.homedir());
+    const name = sanitizeFileName(body?.name);
+    const totalBytes = Number(body?.total_bytes);
+    if (!name) {
+      throw new Error("`name` is required.");
+    }
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+      throw new Error("`total_bytes` must be a positive number.");
+    }
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      throw new Error("Upload is too large. Max 10 MB per transfer.");
+    }
+    const dirStats = await fs.stat(directory);
+    if (!dirStats.isDirectory()) {
+      throw new Error("Upload target must be a directory.");
+    }
+
+    const uploadId = `upl_${crypto.randomUUID().replace(/-/g, "")}`;
+    const tempPath = path.join(directory, `.codex-connect-upload-${uploadId}.part`);
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    await fs.writeFile(tempPath, "");
+    this.pendingUploads.set(uploadId, {
+      uploadId,
+      directory,
+      name,
+      targetPath: path.join(directory, name),
+      tempPath,
+      totalBytes,
+      bytesWritten: 0,
+      updatedAt: Date.now()
+    });
+    return {
+      ok: true,
+      upload_id: uploadId,
+      name,
+      chunk_bytes: 192 * 1024,
+      max_bytes: MAX_UPLOAD_BYTES
+    };
+  }
+
+  async appendFileUploadChunk(body) {
+    await this.cleanupFileUploads();
+    const uploadId = typeof body?.upload_id === "string" ? body.upload_id : "";
+    const dataBase64 = typeof body?.data_base64 === "string" ? body.data_base64 : "";
+    if (!uploadId) {
+      throw new Error("`upload_id` is required.");
+    }
+    if (!dataBase64) {
+      throw new Error("`data_base64` is required.");
+    }
+    const upload = this.pendingUploads.get(uploadId);
+    if (!upload) {
+      throw new Error("upload session not found");
+    }
+    const buffer = Buffer.from(dataBase64, "base64");
+    if (!buffer.length) {
+      throw new Error("upload chunk is empty");
+    }
+    if (upload.bytesWritten + buffer.length > MAX_UPLOAD_BYTES) {
+      throw new Error("Upload is too large. Max 10 MB per transfer.");
+    }
+    await fs.appendFile(upload.tempPath, buffer);
+    upload.bytesWritten += buffer.length;
+    upload.updatedAt = Date.now();
+    return {
+      ok: true,
+      upload_id: uploadId,
+      bytes_written: upload.bytesWritten,
+      total_bytes: upload.totalBytes
+    };
+  }
+
+  async commitFileUpload(body) {
+    await this.cleanupFileUploads();
+    const uploadId = typeof body?.upload_id === "string" ? body.upload_id : "";
+    if (!uploadId) {
+      throw new Error("`upload_id` is required.");
+    }
+    const upload = this.pendingUploads.get(uploadId);
+    if (!upload) {
+      throw new Error("upload session not found");
+    }
+    if (upload.bytesWritten !== upload.totalBytes) {
+      throw new Error(`upload incomplete: received ${upload.bytesWritten} of ${upload.totalBytes} bytes`);
+    }
+    await fs.rm(upload.targetPath, { force: true }).catch(() => {});
+    await fs.rename(upload.tempPath, upload.targetPath);
+    const stats = await fs.stat(upload.targetPath);
+    this.pendingUploads.delete(uploadId);
+    return {
+      ok: true,
+      name: upload.name,
+      path: upload.targetPath,
+      size: stats.size,
+      modified_at: stats.mtime.toISOString()
+    };
+  }
+
+  async abortFileUpload(body) {
+    const uploadId = typeof body?.upload_id === "string" ? body.upload_id : "";
+    if (!uploadId) {
+      throw new Error("`upload_id` is required.");
+    }
+    const upload = this.pendingUploads.get(uploadId);
+    if (!upload) {
+      return { ok: true, upload_id: uploadId, aborted: false };
+    }
+    this.pendingUploads.delete(uploadId);
+    await fs.rm(upload.tempPath, { force: true }).catch(() => {});
+    return { ok: true, upload_id: uploadId, aborted: true };
   }
 
   sendRpcResult(msg, data) {

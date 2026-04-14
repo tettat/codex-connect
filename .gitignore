@@ -18,6 +18,9 @@ Thumbs.db
 dist/
 build/
 coverage/
+.run/
+.wrangler/
+cf-worker/.wrangler/
 
 .gradle/
 android-native/.gradle/

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f5f7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Codex Connect Edge</title>
+    <link rel="manifest" href="/manifest.webmanifest?v=2026.04.13-28" />
+    <link rel="icon" href="/icon.svg?v=2026.04.13-28" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css?v=2026.04.13-28" />
+    <script>
+      (function () {
+        var version = "2026.04.13-28";
+
+        function safeString(value) {
+          return typeof value === "string" ? value.slice(0, 1000) : String(value || "");
+        }
+
+        function send(level, type, detail) {
+          try {
+            var payload = JSON.stringify({
+              level: level,
+              type: type,
+              app_version: version,
+              page: location.pathname,
+              href: location.href,
+              user_agent: navigator.userAgent || "unknown",
+              detail: detail || null
+            });
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon("/api/client-events", new Blob([payload], { type: "application/json" }));
+              return;
+            }
+            fetch("/api/client-events", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: payload,
+              keepalive: true
+            }).catch(function () {});
+          } catch (_error) {}
+        }
+
+        send("info", "html-shell-loaded", {
+          visibility_state: document.visibilityState || "unknown"
+        });
+
+        window.addEventListener(
+          "error",
+          function (event) {
+            send("error", "html-shell-error", {
+              message: safeString(event.message),
+              source: safeString(event.filename),
+              line: event.lineno || null,
+              column: event.colno || null
+            });
+          },
+          true
+        );
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="drawer-backdrop" id="drawerBackdrop"></div>
+      <aside class="rail">
+        <section class="brand-card drawer-head">
+          <div class="drawer-brand">
+            <div class="brand-mark">C</div>
+            <div>
+              <h1>Codex Connect</h1>
+              <p class="brand-copy" data-i18n="brand.copy">Cloud PWA for your desktop session.</p>
+            </div>
+          </div>
+          <button id="closeDrawerBtn" class="ghost-btn icon-btn" type="button" aria-label="Close menu" title="Close menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12"></path>
+              <path d="M18 6 6 18"></path>
+            </svg>
+          </button>
+        </section>
+
+        <nav class="panel side-nav">
+          <button class="side-nav-btn active" data-tab="chats" type="button">
+            <span class="side-nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M5 7.5A2.5 2.5 0 0 1 7.5 5h9A2.5 2.5 0 0 1 19 7.5v6A2.5 2.5 0 0 1 16.5 16H10l-4 3v-3.5A2.5 2.5 0 0 1 5 13.5z"></path>
+              </svg>
+            </span>
+            <span data-i18n="nav.chats">Chats</span>
+          </button>
+          <button class="side-nav-btn" data-tab="devices" type="button">
+            <span class="side-nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <rect x="4" y="5" width="16" height="11" rx="2"></rect>
+                <path d="M9 19h6"></path>
+                <path d="M12 16v3"></path>
+              </svg>
+            </span>
+            <span data-i18n="nav.devices">Devices</span>
+          </button>
+        </nav>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow" data-i18n="status.title">Status</p>
+              <h2 data-i18n="broker.title">Broker</h2>
+            </div>
+            <button id="reconnectBtn" class="ghost-btn" type="button" data-i18n="actions.reconnect">Reconnect</button>
+          </div>
+          <div class="status-stack">
+            <div id="statusPill" class="status-pill offline">Connecting...</div>
+            <div class="meta-line">
+              <span data-i18n="labels.relay">Relay</span>
+              <code id="brokerUrlValue"></code>
+            </div>
+            <div class="meta-line">
+              <span data-i18n="labels.client">Client</span>
+              <code id="clientInstallationValue"></code>
+            </div>
+          </div>
+        </section>
+
+        <section id="drawerSessionsPanel" class="panel hidden">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow" data-i18n="threads.eyebrow">Chats</p>
+              <h2 data-i18n="threads.title">Threads</h2>
+            </div>
+            <button id="newSessionBtn" class="ghost-btn icon-btn" type="button" aria-label="New chat" title="New chat">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+              </svg>
+            </button>
+          </div>
+          <div id="sessionList" class="session-list"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="hero">
+          <div class="hero-main">
+            <button id="menuBtn" class="ghost-btn icon-btn" type="button" aria-label="Open menu" title="Open menu">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16"></path>
+                <path d="M4 12h16"></path>
+                <path d="M4 17h16"></path>
+              </svg>
+            </button>
+            <div>
+            <p class="eyebrow" data-i18n="hero.eyebrow">Cloudflare</p>
+            <h2 id="heroTitle">No device selected</h2>
+            <p id="heroMeta" class="hero-copy">Pair a desktop session to begin.</p>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button id="languageBtn" class="ghost-btn lang-btn" type="button" aria-label="Switch language" title="Switch language">EN</button>
+            <button id="fullscreenBtn" class="ghost-btn icon-btn" type="button" aria-label="Enter focus mode" title="Enter focus mode">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 4H4v4"></path>
+                <path d="M16 4h4v4"></path>
+                <path d="M20 16v4h-4"></path>
+                <path d="M4 16v4h4"></path>
+              </svg>
+            </button>
+            <button id="installBtn" class="ghost-btn hidden" type="button" data-i18n="actions.install">Install</button>
+          </div>
+        </header>
+
+        <section id="tabContent" class="content-panel"></section>
+      </main>
+    </div>
+
+    <div id="toastStack" class="toast-stack"></div>
+
+    <script type="module" src="/app.js?v=2026.04.13-28"></script>
+  </body>
+</html>

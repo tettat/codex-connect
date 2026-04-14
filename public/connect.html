@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pair Code Console</title>
+    <title>Connect Your Phone</title>
     <link rel="stylesheet" href="/assets/styles.css" />
     <link rel="stylesheet" href="/assets/connect.css" />
   </head>
@@ -11,16 +11,18 @@
     <div class="connect-shell">
       <header class="connect-head">
         <div>
-          <p class="eyebrow">SERVER SIDE</p>
-          <h1>Pair Code Console</h1>
-          <p class="hero-copy">This page asks your local server to create a code from ServerA.</p>
+          <p class="eyebrow">DESKTOP SETUP</p>
+          <h1>Connect Your Phone</h1>
+          <p class="hero-copy">Keep this page open on your computer. Scan the QR code on your phone, install the PWA if you want, then enter the pairing code in Devices.</p>
         </div>
         <a class="ghost-btn link-btn" href="/">Back To Chat</a>
       </header>
 
-      <section class="connect-grid">
-        <article class="connect-card">
-          <h2>Connection Code</h2>
+      <section class="connect-grid connect-primary-grid">
+        <article class="connect-card connect-main-card">
+          <div class="card-kicker">Step 1</div>
+          <h2>Pair Code</h2>
+          <p class="card-copy">Your desktop generates a 6-digit code. Keep this tab open while you pair the phone.</p>
           <label class="field-label" for="ttlInput">TTL Seconds</label>
           <input id="ttlInput" class="path-input" type="number" min="30" max="3600" value="300" />
           <div class="row">
@@ -30,10 +32,58 @@
           <div class="code-box">
             <div id="codeValue" class="code-value">------</div>
             <div id="codeMeta" class="code-meta">No active code.</div>
+            <div id="countdownValue" class="code-countdown">Waiting for a code.</div>
+          </div>
+          <div class="status-pills">
+            <div class="status-pill">
+              <span class="status-label">Broker</span>
+              <strong id="connectedState">Checking…</strong>
+            </div>
+            <div class="status-pill">
+              <span class="status-label">Trusted Devices</span>
+              <strong id="trustedDevicesValue">0</strong>
+            </div>
           </div>
         </article>
 
+        <article class="connect-card connect-phone-card">
+          <div class="card-kicker">Step 2</div>
+          <h2>Open On Phone</h2>
+          <p class="card-copy">Scan the QR code or open the link below. Then install to the home screen if you want an app-like experience.</p>
+          <div class="phone-entry">
+            <div class="qr-panel">
+              <img id="qrImage" class="qr-image" alt="QR code for the mobile PWA entry page" />
+            </div>
+            <div class="phone-actions">
+              <label class="field-label">Phone PWA Link</label>
+              <input id="mobileUrl" class="path-input" type="text" readonly />
+              <div class="row">
+                <a id="openMobileBtn" class="primary-btn link-btn" href="#" target="_blank" rel="noreferrer">Open Link</a>
+                <button id="copyMobileBtn" class="ghost-btn" type="button">Copy Link</button>
+              </div>
+              <ol class="setup-list">
+                <li>Open this link on your phone.</li>
+                <li>Install it to the home screen if you want a full-screen app.</li>
+                <li>Open <strong>Devices</strong> and enter the pair code shown on this page.</li>
+              </ol>
+              <div class="install-tips">
+                <div>
+                  <span class="tip-label">iPhone</span>
+                  <span>Share → Add to Home Screen</span>
+                </div>
+                <div>
+                  <span class="tip-label">Android</span>
+                  <span>Menu → Install app / Add to home screen</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="connect-grid connect-secondary-grid">
         <article class="connect-card">
+          <div class="card-kicker">Details</div>
           <h2>Broker Status</h2>
           <label class="field-label">Broker URL</label>
           <input id="brokerUrl" class="path-input" type="text" readonly />
@@ -47,6 +97,7 @@
       </section>
 
       <section class="connect-card log-card">
+        <div class="card-kicker">Details</div>
         <h2>Live Log</h2>
         <pre id="logBox" class="log-box"></pre>
       </section>

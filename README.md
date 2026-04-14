@@ -4,6 +4,24 @@
 
 ## 中文说明
 
+### 新用户入口
+
+如果你的目标是：
+
+- 让一个 `Coding Agent` 在电脑上把项目启动起来
+- 让用户看到桌面启动配对页
+- 让用户用手机扫码进入 PWA 并完成配对
+
+先直接看这份文档：
+
+- [Cloudflare PWA 快速开始](docs/cloudflare-pwa-quickstart.md)
+
+推荐 `Coding Agent` 直接执行：
+
+```bash
+bash scripts/start-cf-onboarding.sh
+```
+
 ### 项目简介
 
 `CodexAPI` 提供一个本地 OpenAI 兼容 HTTP 服务，底层复用官方 `codex` CLI 已登录会话。它适合已经在本机使用 `codex login`，但还需要一个标准 HTTP 接口给其他工具、脚本或客户端调用的场景。
@@ -155,6 +173,19 @@ curl http://localhost:4317/v1/chat/completions \
 ```
 
 ## English
+
+### New User Entry
+
+If you want the ready-to-use flow:
+
+- start the desktop service
+- connect it to the current Cloudflare broker
+- open the PWA on a phone
+- pair with a code and start using it
+
+Start here:
+
+- [Cloudflare PWA Quick Start](docs/cloudflare-pwa-quickstart.md)
 
 ### Overview
 
