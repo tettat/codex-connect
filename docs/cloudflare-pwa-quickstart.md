@@ -15,6 +15,14 @@
 4. 用户安装到桌面并输入连接码
 5. 进入 `Chats` 开始使用
 
+## 公开可分享的地址
+
+这些地址不包含任何 token，可以直接发给协作方：
+
+- 手机 PWA：`https://codex-connect-edge.wahtmelon.workers.dev`
+- Cloudflare Broker WebSocket：`wss://codex-connect-edge.wahtmelon.workers.dev/ws`
+- 电脑启动配对页：`http://127.0.0.1:4417/assets/connect.html`
+
 ## 电脑只需要什么
 
 - Node.js `18+`
@@ -113,5 +121,5 @@ bash scripts/print-cf-stack.sh
 ## 给别的 Agent 的一句话引导
 
 ```text
-参考 /Users/waht/Code/codex-connect/docs/cloudflare-pwa-quickstart.md 里的“给 Coding Agent：启动项目”和“给用户：连接手机”两部分，先在仓库根目录执行启动命令把桌面启动配对页拉起来，再按文档里的二维码、安装和配对步骤引导用户连接。
+参考 /Users/waht/Code/codex-connect/docs/cloudflare-pwa-quickstart.md 里的“公开可分享的地址”“给 Coding Agent：启动项目”和“给用户：连接手机”三部分，在仓库根目录执行 `bash scripts/start-cf-onboarding.sh`，把本地启动配对页 `http://127.0.0.1:4417/assets/connect.html` 拉起来，并按文档引导用户用手机打开 `https://codex-connect-edge.wahtmelon.workers.dev`、安装到桌面、在 Devices 输入连接码完成配对；Cloudflare broker 地址是 `wss://codex-connect-edge.wahtmelon.workers.dev/ws`。
 ```
