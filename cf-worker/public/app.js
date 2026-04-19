@@ -1,7 +1,8 @@
-const APP_VERSION = "2026.04.13-28"
+const APP_VERSION = "2026.04.13-32"
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 const IMAGE_UPLOAD_CHUNK_BYTES = 192 * 1024
 const IMAGE_UPLOAD_RPC_TIMEOUT_MS = 2 * 60 * 1000
+const CHAT_STREAM_RPC_TIMEOUT_MS = 2 * 60 * 60 * 1000
 const LANGUAGE_ORDER = ["en", "zh", "ja"]
 const LANGUAGE_BUTTON_LABELS = {
   en: "EN",
@@ -15,7 +16,8 @@ const STORAGE_KEYS = {
   sessionsByDevice: "codex-connect-edge.sessions",
   activeDeviceKey: "codex-connect-edge.active-device-key",
   activeSessionIds: "codex-connect-edge.active-session-ids",
-  language: "codex-connect-edge.language"
+  language: "codex-connect-edge.language",
+  chatDisplayMode: "codex-connect-edge.chat-display-mode"
 }
 
 const storage = createSafeStorage()
@@ -75,6 +77,25 @@ const MESSAGES = {
     "message.codex": "Codex",
     "time.now": "now",
     "chat.thinking": "Thinking...",
+    "actions.toggleChatDisplay": "Switch chat density",
+    "display.modeStandard": "Standard",
+    "display.modeCompact": "Compact",
+    "activity.thinking": "Thinking",
+    "activity.inspect": "Inspecting workspace",
+    "activity.git": "Checking git state",
+    "activity.test": "Running tests",
+    "activity.edit": "Updating files",
+    "activity.command": "Running command",
+    "activity.work": "Working",
+    "activity.detailNone": "No details available.",
+    "activity.detailEncrypted": "Detailed reasoning is not available here.",
+    "activity.detailCommand": "Command",
+    "activity.detailCwd": "Working directory",
+    "activity.detailOutput": "Output",
+    "activity.detailExitCode": "Exit code",
+    "activity.detailDuration": "Duration",
+    "activity.detailFiles": "Files",
+    "activity.detailQuery": "Query",
     "composer.placeholderReady": "Message Codex...",
     "composer.placeholderNoWorkspace": "Select a folder in Settings first",
     "settings.chat": "Chat Settings",
@@ -210,6 +231,25 @@ const MESSAGES = {
     "message.codex": "Codex",
     "time.now": "刚刚",
     "chat.thinking": "思考中...",
+    "actions.toggleChatDisplay": "切换聊天展示",
+    "display.modeStandard": "标准",
+    "display.modeCompact": "简洁",
+    "activity.thinking": "思考中",
+    "activity.inspect": "正在检查工作区",
+    "activity.git": "正在检查 Git 状态",
+    "activity.test": "正在运行测试",
+    "activity.edit": "正在更新文件",
+    "activity.command": "正在运行命令",
+    "activity.work": "正在处理",
+    "activity.detailNone": "暂无可展示的细节。",
+    "activity.detailEncrypted": "这里无法展示详细思考内容。",
+    "activity.detailCommand": "命令",
+    "activity.detailCwd": "工作目录",
+    "activity.detailOutput": "输出",
+    "activity.detailExitCode": "退出码",
+    "activity.detailDuration": "耗时",
+    "activity.detailFiles": "文件",
+    "activity.detailQuery": "查询",
     "composer.placeholderReady": "给 Codex 发消息...",
     "composer.placeholderNoWorkspace": "先在设置里选择文件夹",
     "settings.chat": "会话设置",
@@ -345,6 +385,25 @@ const MESSAGES = {
     "message.codex": "Codex",
     "time.now": "今",
     "chat.thinking": "考え中...",
+    "actions.toggleChatDisplay": "表示密度を切り替え",
+    "display.modeStandard": "標準",
+    "display.modeCompact": "簡潔",
+    "activity.thinking": "考え中",
+    "activity.inspect": "ワークスペースを確認中",
+    "activity.git": "Git 状態を確認中",
+    "activity.test": "テストを実行中",
+    "activity.edit": "ファイルを更新中",
+    "activity.command": "コマンドを実行中",
+    "activity.work": "処理中",
+    "activity.detailNone": "表示できる詳細はありません。",
+    "activity.detailEncrypted": "詳細な思考内容はここでは表示できません。",
+    "activity.detailCommand": "コマンド",
+    "activity.detailCwd": "作業ディレクトリ",
+    "activity.detailOutput": "出力",
+    "activity.detailExitCode": "終了コード",
+    "activity.detailDuration": "所要時間",
+    "activity.detailFiles": "ファイル",
+    "activity.detailQuery": "検索",
     "composer.placeholderReady": "Codex にメッセージ...",
     "composer.placeholderNoWorkspace": "先に設定でフォルダを選択",
     "settings.chat": "会話設定",
@@ -438,6 +497,7 @@ const state = {
   activeDeviceKey: storageGet(STORAGE_KEYS.activeDeviceKey) || null,
   activeSessionIds: loadJson(STORAGE_KEYS.activeSessionIds, {}),
   language: loadLanguage(),
+  chatDisplayMode: loadChatDisplayMode(),
   activeTab: "chats",
   drawerOpen: false,
   immersiveChat: false,
@@ -492,10 +552,16 @@ const refs = {
 }
 
 let client = null
+let activityElapsedTicker = null
 
 function loadLanguage() {
   const saved = storageGet(STORAGE_KEYS.language)
   return LANGUAGE_ORDER.includes(saved) ? saved : "en"
+}
+
+function loadChatDisplayMode() {
+  const saved = storageGet(STORAGE_KEYS.chatDisplayMode)
+  return saved === "compact" ? "compact" : "standard"
 }
 
 function t(key, vars = {}) {
@@ -556,6 +622,7 @@ async function bootstrap() {
 
   applyStaticCopy()
   wireGlobalEvents()
+  startActivityElapsedTicker()
   ensureSessionForActiveDevice()
   renderAll()
   reportClientEvent("info", "app-booted", {
@@ -643,6 +710,7 @@ function wireGlobalEvents() {
   refs.tabContent.addEventListener("submit", onTabContentSubmit)
   refs.tabContent.addEventListener("change", onTabContentChange)
   refs.tabContent.addEventListener("input", onTabContentInput)
+  refs.tabContent.addEventListener("toggle", onTabContentToggle, true)
   refs.tabContent.addEventListener("scroll", onTabContentScroll, { capture: true, passive: true })
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -784,6 +852,13 @@ async function onTabContentClick(event) {
     state.activeTab = "settings"
     state.immersiveChat = false
     state.drawerOpen = false
+    renderAll()
+    return
+  }
+
+  if (action === "toggle-chat-display") {
+    state.chatDisplayMode = state.chatDisplayMode === "standard" ? "compact" : "standard"
+    storageSet(STORAGE_KEYS.chatDisplayMode, state.chatDisplayMode)
     renderAll()
     return
   }
@@ -933,6 +1008,21 @@ function onTabContentScroll(event) {
     stickToBottom: isNearBottom(target),
     scrollTop: target.scrollTop
   }
+}
+
+function onTabContentToggle(event) {
+  const details = event.target
+  if (!(details instanceof HTMLDetailsElement) || !details.dataset.activityId) return
+  const messageNode = details.closest("[data-message-id]")
+  const session = currentSession()
+  if (!(messageNode instanceof HTMLElement) || !session) return
+  const message = session.messages?.find((entry) => entry?.id === messageNode.dataset.messageId)
+  if (!message) return
+  const segments = ensureMessageSegments(message)
+  const segment = segments.find((entry) => entry.type === "activity" && entry.id === details.dataset.activityId)
+  if (!segment) return
+  segment.expanded = details.open
+  persistSessions()
 }
 
 async function resumeDevice(device, { quiet = false } = {}) {
@@ -1182,26 +1272,129 @@ async function sendChatMessage(rawText) {
       cwd: session.cwd,
       yolo: session.yolo
     }, {
+      timeout: CHAT_STREAM_RPC_TIMEOUT_MS,
       onStream(event, data) {
         if (event === "thread" && data?.thread_id) {
           session.threadId = data.thread_id
           persistSessions()
+          updateChatThreadSubtitle(session)
+          renderSessions()
+        }
+        if (event === "activity" && data) {
+          upsertAssistantActivity(assistantMessage, data)
+          patchStreamingAssistantMessage(session, assistantMessage)
         }
         if (event === "delta" && data?.delta) {
-          assistantMessage.content += data.delta
-          renderAll()
+          appendAssistantDelta(assistantMessage, data.delta)
+          patchStreamingAssistantMessage(session, assistantMessage)
         }
       }
     })
     session.updatedAt = Date.now()
     persistSessions()
+    renderSessions()
+    renderHero()
   } catch (error) {
-    assistantMessage.content = `${t("error.prefix")}: ${error.message}`
+    appendAssistantDelta(assistantMessage, `${assistantMessage.content ? "\n\n" : ""}${t("error.prefix")}: ${error.message}`)
     persistSessions()
+    patchStreamingAssistantMessage(session, assistantMessage)
     showToast(error.message, true)
   }
+}
 
-  renderAll()
+function upsertAssistantActivity(message, activity) {
+  if (!message) return
+  const next = normalizeActivity(activity)
+  if (!next) return
+  const hasStartTimestamp = Boolean(activity?.startedAt || activity?.createdAt || activity?.timestamp)
+  if (!Array.isArray(message.activities)) {
+    message.activities = []
+  }
+  const index = message.activities.findIndex((entry) => entry.id === next.id)
+  if (index >= 0) {
+    message.activities[index] = {
+      ...message.activities[index],
+      ...next,
+      createdAt: hasStartTimestamp ? next.createdAt : message.activities[index].createdAt || next.createdAt,
+      startedAt: hasStartTimestamp ? next.startedAt : message.activities[index].startedAt || next.startedAt,
+      detail: next.detail || message.activities[index].detail || null
+    }
+  } else {
+    message.activities.push(next)
+  }
+  const segments = ensureMessageSegments(message)
+  const segmentIndex = segments.findIndex((segment) => segment.type === "activity" && segment.id === next.id)
+  if (segmentIndex >= 0) {
+    segments[segmentIndex] = {
+      ...segments[segmentIndex],
+      ...next,
+      createdAt: hasStartTimestamp ? next.createdAt : segments[segmentIndex].createdAt || next.createdAt,
+      startedAt: hasStartTimestamp ? next.startedAt : segments[segmentIndex].startedAt || next.startedAt,
+      detail: next.detail || segments[segmentIndex].detail || null,
+      expanded: Boolean(segments[segmentIndex].expanded)
+    }
+  } else {
+    segments.push({
+      type: "activity",
+      ...next,
+      expanded: false
+    })
+  }
+}
+
+function appendAssistantDelta(message, delta) {
+  if (!message || !delta) return
+  message.content += delta
+  const segments = ensureMessageSegments(message)
+  const last = segments[segments.length - 1]
+  if (last?.type === "text") {
+    last.text += delta
+    return
+  }
+  segments.push({
+    type: "text",
+    id: randomUuid(),
+    text: delta
+  })
+}
+
+function patchStreamingAssistantMessage(session, message) {
+  const activeSession = currentSession()
+  if (state.activeTab !== "chats" || !session || !activeSession || activeSession.id !== session.id) return
+  const chatWindow = refs.tabContent.querySelector(".chat-window")
+  if (!(chatWindow instanceof HTMLElement)) {
+    renderAll()
+    return
+  }
+  const shouldStick = isNearBottom(chatWindow)
+  const previousScrollTop = chatWindow.scrollTop
+  const existing = chatWindow.querySelector(`[data-message-id=\"${message.id}\"]`)
+  if (!(existing instanceof HTMLElement)) {
+    renderAll()
+    return
+  }
+  existing.outerHTML = renderChatMessageMarkup(message, session)
+  const nextChatWindow = refs.tabContent.querySelector(".chat-window")
+  if (!(nextChatWindow instanceof HTMLElement)) return
+  if (shouldStick) {
+    nextChatWindow.scrollTop = nextChatWindow.scrollHeight
+  } else {
+    nextChatWindow.scrollTop = previousScrollTop
+  }
+  state.runtime.chatScroll = {
+    sessionId: session.id,
+    stickToBottom: isNearBottom(nextChatWindow),
+    scrollTop: nextChatWindow.scrollTop
+  }
+}
+
+function updateChatThreadSubtitle(session) {
+  const activeSession = currentSession()
+  if (state.activeTab !== "chats" || !session || !activeSession || activeSession.id !== session.id) return
+  const subtitle = refs.tabContent.querySelector(".chat-shell-subtitle")
+  if (subtitle) {
+    subtitle.textContent = renderThreadLabel(session)
+  }
 }
 
 async function rpc(method, body, { onStream, timeout } = {}) {
@@ -1319,11 +1512,152 @@ function renderTabContent() {
   refs.tabContent.innerHTML = renderChatTab()
 }
 
+function renderThreadLabel(session) {
+  return session?.threadId ? t("thread.label", { id: shortId(session.threadId) }) : t("thread.fresh")
+}
+
+function renderChatMessageMarkup(message, session) {
+  return `
+    <article class="chat-message ${message.role}" data-message-id="${escapeHtmlAttr(message.id || "")}">
+      <div class="message-meta-row ${message.role}">
+        <span class="message-author">${message.role === "user" ? escapeHtml(t("message.you")) : escapeHtml(t("message.codex"))}</span>
+        <span class="message-time">${escapeHtml(formatTime(message.createdAt || session?.updatedAt || null) || t("time.now"))}</span>
+      </div>
+      <div class="message-bubble ${message.role}">
+        ${
+          message.attachments?.length
+            ? `<div class="message-attachments">${message.attachments.map((attachment) => renderAttachmentChip(attachment)).join("")}</div>`
+            : ""
+        }
+        ${renderMessageContentMarkup(message)}
+      </div>
+    </article>
+  `
+}
+
+function renderMessageContentMarkup(message) {
+  if (message.role === "assistant" && state.chatDisplayMode === "standard") {
+    return renderAssistantTimelineMarkup(message)
+  }
+  if (!message.content && message.role !== "assistant") return ""
+  return `<div class="message-body">${escapeHtml(message.content || t("chat.thinking"))}</div>`
+}
+
+function renderAssistantTimelineMarkup(message) {
+  const segments = getRenderableMessageSegments(message)
+  if (!segments.length) {
+    return `<div class="message-body">${escapeHtml(message.content || t("chat.thinking"))}</div>`
+  }
+  return `
+    <div class="message-timeline">
+      ${segments.map((segment) => renderMessageSegmentMarkup(segment)).join("")}
+    </div>
+  `
+}
+
+function renderMessageSegmentMarkup(segment) {
+  if (!segment || typeof segment !== "object") return ""
+  if (segment.type === "text") {
+    if (!segment.text) return ""
+    return `<div class="message-body message-segment-text">${escapeHtml(segment.text)}</div>`
+  }
+  if (segment.type === "activity") {
+    return renderActivitySegmentMarkup(segment)
+  }
+  return ""
+}
+
+function renderActivitySegmentMarkup(activity) {
+  const normalized = normalizeActivity(activity)
+  if (!normalized) return ""
+  const label = t(`activity.${normalized.kind}`)
+  const elapsed = formatActivityElapsed(normalized)
+  const detailMarkup = renderActivityDetailMarkup(normalized)
+  const summaryMarkup = `
+    <summary class="message-activity-summary">
+      <span class="message-activity-summary-main">
+        <span class="message-activity-dot" aria-hidden="true"></span>
+        <span class="message-activity-text">${escapeHtml(label)}</span>
+      </span>
+      <span class="message-activity-summary-side">
+        <span
+          class="message-activity-elapsed"
+          data-activity-elapsed="true"
+          data-started-at="${escapeHtmlAttr(normalized.startedAt || normalized.createdAt || "")}"
+          data-completed-at="${escapeHtmlAttr(normalized.completedAt || "")}"
+        >${escapeHtml(elapsed)}</span>
+        <span class="message-activity-chevron" aria-hidden="true"></span>
+      </span>
+    </summary>
+  `
+  return `
+    <details
+      class="message-activity-card ${escapeHtmlAttr(normalized.status)}"
+      data-activity-id="${escapeHtmlAttr(normalized.id)}"
+      ${normalized.expanded ? "open" : ""}
+    >
+      ${summaryMarkup}
+      <div class="message-activity-detail">
+        ${detailMarkup}
+      </div>
+    </details>
+  `
+}
+
+function renderActivityDetailMarkup(activity) {
+  const detail = activity.detail || null
+  if (!detail) {
+    return `<p class="message-activity-detail-empty muted">${escapeHtml(activity.kind === "thinking" ? t("activity.detailEncrypted") : t("activity.detailNone"))}</p>`
+  }
+  const parts = []
+  if (detail.summary) {
+    parts.push(`<p class="message-activity-summary-text">${escapeHtml(detail.summary)}</p>`)
+  }
+  if (detail.command) {
+    parts.push(renderActivityDetailSection(t("activity.detailCommand"), `<pre>${escapeHtml(detail.command)}</pre>`))
+  }
+  if (detail.cwd) {
+    parts.push(renderActivityDetailSection(t("activity.detailCwd"), `<code>${escapeHtml(detail.cwd)}</code>`))
+  }
+  if (detail.query) {
+    parts.push(renderActivityDetailSection(t("activity.detailQuery"), `<code>${escapeHtml(detail.query)}</code>`))
+  }
+  if (Array.isArray(detail.paths) && detail.paths.length) {
+    parts.push(renderActivityDetailSection(t("activity.detailFiles"), detail.paths.map((path) => `<code>${escapeHtml(path)}</code>`).join("")))
+  }
+  const stats = []
+  if (detail.exitCode != null) {
+    stats.push(`<span class="message-activity-stat"><strong>${escapeHtml(t("activity.detailExitCode"))}</strong><span>${escapeHtml(String(detail.exitCode))}</span></span>`)
+  }
+  if (detail.durationMs != null) {
+    stats.push(`<span class="message-activity-stat"><strong>${escapeHtml(t("activity.detailDuration"))}</strong><span>${escapeHtml(formatDuration(detail.durationMs))}</span></span>`)
+  }
+  if (stats.length) {
+    parts.push(`<div class="message-activity-stats">${stats.join("")}</div>`)
+  }
+  if (detail.output) {
+    parts.push(renderActivityDetailSection(t("activity.detailOutput"), `<pre>${escapeHtml(detail.output)}</pre>`))
+  }
+  if (!parts.length) {
+    return `<p class="message-activity-detail-empty muted">${escapeHtml(t("activity.detailNone"))}</p>`
+  }
+  return parts.join("")
+}
+
+function renderActivityDetailSection(label, bodyMarkup) {
+  return `
+    <section class="message-activity-detail-section">
+      <div class="message-activity-detail-label">${escapeHtml(label)}</div>
+      <div class="message-activity-detail-value">${bodyMarkup}</div>
+    </section>
+  `
+}
+
 function renderChatTab() {
   const session = currentSession()
   const messages = session?.messages || []
   const device = getActiveDevice()
-  const threadLabel = session?.threadId ? t("thread.label", { id: shortId(session.threadId) }) : t("thread.fresh")
+  const threadLabel = renderThreadLabel(session)
   const workspaceReady = Boolean(session?.cwd)
   const draftAttachments = session?.draftAttachments || []
   const draftText = session?.draftText || ""
@@ -1331,6 +1665,7 @@ function renderChatTab() {
   const hasBlockingAttachments = hasBlockingDraftAttachments(session)
   const composerExpanded = Boolean(session?.composerExpanded || draftAttachments.length)
   const composerToggleLabel = composerExpanded ? t("actions.collapseComposer") : t("actions.expandComposer")
+  const chatDisplayLabel = state.chatDisplayMode === "standard" ? t("display.modeStandard") : t("display.modeCompact")
   return `
     <section class="chat-layout chat-page single-pane">
       <div class="chat-shell">
@@ -1340,6 +1675,7 @@ function renderChatTab() {
             <div class="chat-shell-subtitle">${escapeHtml(threadLabel)}</div>
           </div>
           <div class="chat-shell-head-actions">
+            <button class="ghost-btn chat-mode-btn" data-action="toggle-chat-display" type="button" aria-label="${escapeHtmlAttr(t("actions.toggleChatDisplay"))}" title="${escapeHtmlAttr(t("actions.toggleChatDisplay"))}">${escapeHtml(chatDisplayLabel)}</button>
             ${
               state.immersiveChat
                 ? `<button class="ghost-btn icon-btn" data-action="toggle-immersive-chat" type="button" aria-label="${escapeHtmlAttr(t("actions.exitFocus"))}" title="${escapeHtmlAttr(t("actions.exitFocus"))}">${iconSvg("fullscreen-exit")}</button>`
@@ -1364,28 +1700,7 @@ function renderChatTab() {
               `
               : messages.length
               ? messages
-                  .map(
-                    (message) => `
-                      <article class="chat-message ${message.role}">
-                        <div class="message-meta-row ${message.role}">
-                          <span class="message-author">${message.role === "user" ? escapeHtml(t("message.you")) : escapeHtml(t("message.codex"))}</span>
-                          <span class="message-time">${escapeHtml(formatTime(message.createdAt || session?.updatedAt || null) || t("time.now"))}</span>
-                        </div>
-                        <div class="message-bubble ${message.role}">
-                          ${
-                            message.attachments?.length
-                              ? `<div class="message-attachments">${message.attachments.map((attachment) => renderAttachmentChip(attachment)).join("")}</div>`
-                              : ""
-                          }
-                          ${
-                            message.content || message.role === "assistant"
-                              ? `<div class="message-body">${escapeHtml(message.content || t("chat.thinking"))}</div>`
-                              : ""
-                          }
-                        </div>
-                      </article>
-                    `
-                  )
+                  .map((message) => renderChatMessageMarkup(message, session))
                   .join("")
               : `
                 <article class="chat-empty-state">
@@ -1767,6 +2082,8 @@ function createMessage(role, content, extras = {}) {
     id: randomUuid(),
     role,
     content,
+    activities: Array.isArray(extras.activities) ? extras.activities.map((activity) => normalizeActivity(activity)).filter(Boolean) : [],
+    segments: Array.isArray(extras.segments) ? extras.segments.map((segment) => normalizeMessageSegment(segment)).filter(Boolean) : buildMessageSegments({ role, content, activities: extras.activities || [] }),
     attachments: Array.isArray(extras.attachments) ? extras.attachments.map((attachment) => ({ ...attachment, status: "ready" })) : [],
     createdAt: new Date().toISOString()
   }
@@ -1845,10 +2162,118 @@ function normalizeMessage(message) {
   if (!message || typeof message !== "object") {
     return createMessage("assistant", "")
   }
+  const activities = Array.isArray(message.activities) ? message.activities.map((activity) => normalizeActivity(activity)).filter(Boolean) : []
   return {
     ...message,
+    activities,
+    segments: buildMessageSegments({
+      ...message,
+      activities
+    }),
     attachments: Array.isArray(message.attachments) ? message.attachments.map((attachment) => normalizeAttachment(attachment)).filter(Boolean) : []
   }
+}
+
+function normalizeActivity(activity) {
+  if (!activity || typeof activity !== "object") return null
+  const kind = typeof activity.kind === "string" && activity.kind ? activity.kind : "work"
+  const status = activity.status === "completed" ? "completed" : "running"
+  return {
+    id: activity.id || randomUuid(),
+    kind,
+    status,
+    createdAt: normalizeTimestampValue(activity.createdAt) || new Date().toISOString(),
+    startedAt: normalizeTimestampValue(activity.startedAt || activity.createdAt) || new Date().toISOString(),
+    completedAt: status === "completed" ? normalizeTimestampValue(activity.completedAt) || normalizeTimestampValue(activity.createdAt) || new Date().toISOString() : "",
+    detail: normalizeActivityDetail(activity.detail),
+    expanded: Boolean(activity.expanded)
+  }
+}
+
+function buildMessageSegments(message) {
+  if (Array.isArray(message?.segments) && message.segments.length) {
+    return message.segments.map((segment) => normalizeMessageSegment(segment)).filter(Boolean)
+  }
+  const segments = []
+  if (Array.isArray(message?.activities)) {
+    for (const activity of message.activities) {
+      const normalized = normalizeActivity(activity)
+      if (!normalized) continue
+      segments.push({
+        type: "activity",
+        ...normalized
+      })
+    }
+  }
+  if (typeof message?.content === "string" && message.content) {
+    segments.push({
+      type: "text",
+      id: randomUuid(),
+      text: message.content
+    })
+  }
+  return segments
+}
+
+function ensureMessageSegments(message) {
+  if (!message) return []
+  if (!Array.isArray(message.segments)) {
+    message.segments = buildMessageSegments(message)
+  }
+  return message.segments
+}
+
+function getRenderableMessageSegments(message) {
+  return ensureMessageSegments(message)
+    .map((segment) => normalizeMessageSegment(segment))
+    .filter(Boolean)
+}
+
+function normalizeMessageSegment(segment) {
+  if (!segment || typeof segment !== "object") return null
+  if (segment.type === "text") {
+    const text = typeof segment.text === "string" ? segment.text : ""
+    if (!text) return null
+    return {
+      type: "text",
+      id: segment.id || randomUuid(),
+      text
+    }
+  }
+  if (segment.type === "activity" || segment.kind) {
+    const normalized = normalizeActivity(segment)
+    if (!normalized) return null
+    return {
+      type: "activity",
+      ...normalized
+    }
+  }
+  return null
+}
+
+function normalizeActivityDetail(detail) {
+  if (!detail || typeof detail !== "object") return null
+  const next = {}
+  if (typeof detail.summary === "string" && detail.summary.trim()) next.summary = detail.summary.trim()
+  if (typeof detail.command === "string" && detail.command.trim()) next.command = detail.command.trim()
+  if (typeof detail.cwd === "string" && detail.cwd.trim()) next.cwd = detail.cwd.trim()
+  if (typeof detail.query === "string" && detail.query.trim()) next.query = detail.query.trim()
+  if (typeof detail.output === "string" && detail.output.trim()) next.output = detail.output.trim()
+  if (Array.isArray(detail.paths)) {
+    const paths = detail.paths.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean)
+    if (paths.length) next.paths = paths
+  }
+  if (detail.exitCode != null && Number.isFinite(Number(detail.exitCode))) next.exitCode = Number(detail.exitCode)
+  if (detail.durationMs != null && Number.isFinite(Number(detail.durationMs))) next.durationMs = Math.max(0, Math.round(Number(detail.durationMs)))
+  if (detail.encrypted === true) next.encrypted = true
+  return Object.keys(next).length ? next : null
+}
+
+function normalizeTimestampValue(value) {
+  if (!value) return ""
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  return date.toISOString()
 }
 
 function normalizeAttachment(attachment, { draft = false } = {}) {
@@ -2285,6 +2710,47 @@ function formatTime(value) {
   return date.toLocaleTimeString(state.language === "zh" ? "zh-CN" : state.language, { hour: "numeric", minute: "2-digit" })
 }
 
+function startActivityElapsedTicker() {
+  if (activityElapsedTicker) return
+  activityElapsedTicker = window.setInterval(() => {
+    refreshVisibleActivityElapsed()
+  }, 1000)
+}
+
+function refreshVisibleActivityElapsed() {
+  for (const node of refs.tabContent.querySelectorAll("[data-activity-elapsed]")) {
+    if (!(node instanceof HTMLElement)) continue
+    const startedAt = node.dataset.startedAt || ""
+    const completedAt = node.dataset.completedAt || ""
+    const elapsed = formatElapsedRange(startedAt, completedAt)
+    if (node.textContent !== elapsed) {
+      node.textContent = elapsed
+    }
+  }
+}
+
+function formatActivityElapsed(activity) {
+  return formatElapsedRange(activity.startedAt || activity.createdAt || "", activity.completedAt || "")
+}
+
+function formatElapsedRange(startedAt, completedAt) {
+  const started = Date.parse(startedAt || "")
+  if (Number.isNaN(started)) return "0s"
+  const ended = completedAt ? Date.parse(completedAt) : Date.now()
+  const safeEnded = Number.isNaN(ended) ? Date.now() : ended
+  return formatDuration(Math.max(0, safeEnded - started))
+}
+
+function formatDuration(value) {
+  const totalSeconds = Math.max(0, Math.round((Number(value) || 0) / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -2441,19 +2907,42 @@ class BrokerClient {
   rpc(method, body, { onStream, timeout = 10 * 60 * 1000 } = {}) {
     const reqId = `req_${this.seq++}`
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(reqId)
-        reject(new Error(`${method} timeout`))
-      }, timeout)
-      this.pending.set(reqId, { kind: "rpc", resolve, reject, timer, onStream })
+      const pending = {
+        kind: "rpc",
+        method,
+        resolve,
+        reject,
+        timer: null,
+        timeoutMs: Number.isFinite(timeout) ? Number(timeout) : 10 * 60 * 1000,
+        onStream
+      }
+      pending.timer = this.createRpcTimer(reqId, pending)
+      this.pending.set(reqId, pending)
       try {
         this.send({ type: "rpc", req_id: reqId, method, body: body ?? null })
       } catch (error) {
-        clearTimeout(timer)
+        clearTimeout(pending.timer)
         this.pending.delete(reqId)
         reject(error)
       }
     })
+  }
+
+  createRpcTimer(reqId, pending) {
+    if (!pending || !Number.isFinite(pending.timeoutMs) || pending.timeoutMs <= 0) {
+      return null
+    }
+    return setTimeout(() => {
+      this.pending.delete(reqId)
+      pending.reject(new Error(`${pending.method} timeout`))
+    }, pending.timeoutMs)
+  }
+
+  refreshRpcTimer(reqId, pending) {
+    if (!pending || pending.kind !== "rpc") return
+    if (!Number.isFinite(pending.timeoutMs) || pending.timeoutMs <= 0) return
+    clearTimeout(pending.timer)
+    pending.timer = this.createRpcTimer(reqId, pending)
   }
 
   onMessage(raw) {
@@ -2495,6 +2984,7 @@ class BrokerClient {
     }
 
     if (msg.type === "rpc_stream") {
+      this.refreshRpcTimer(msg.req_id, pending)
       pending.onStream?.(msg.event, msg.data)
       return
     }
