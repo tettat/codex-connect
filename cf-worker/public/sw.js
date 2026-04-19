@@ -1,5 +1,5 @@
-const CACHE_NAME = "codex-connect-edge-v25"
-const VERSION = "2026.04.13-28"
+const CACHE_NAME = "codex-connect-edge-v29"
+const VERSION = "2026.04.13-32"
 const CORE_ASSETS = [
   "/",
   `/styles.css?v=${VERSION}`,

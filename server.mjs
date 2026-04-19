@@ -253,6 +253,8 @@ async function handleUiStream(res, body) {
       if (event.kind === "thread") {
         finalThreadId = event.threadId;
         writeSseEvent(res, "thread", { thread_id: event.threadId, model });
+      } else if (event.kind === "activity") {
+        writeSseEvent(res, "activity", event.activity);
       } else if (event.kind === "delta") {
         finalText += event.delta;
         writeSseEvent(res, "delta", { delta: event.delta });
@@ -326,6 +328,8 @@ async function streamUiTurnToCallbacks(body, callbacks) {
       if (event.kind === "thread") {
         finalThreadId = event.threadId;
         callbacks.onThread?.({ thread_id: event.threadId, model });
+      } else if (event.kind === "activity") {
+        callbacks.onActivity?.(event.activity);
       } else if (event.kind === "delta") {
         finalText += event.delta;
         callbacks.onDelta?.({ delta: event.delta });
@@ -1110,11 +1114,24 @@ async function createCodexTurnStream({ model, threadId, prompt, inputItems, cwd,
           yield { kind: "thread", threadId: msg.params.thread.id };
         }
 
+        if (msg.method === "item/started" && msg.params?.turnId === turnId && msg.params?.item) {
+          const activity = normalizeActivityEvent(msg.params.item, "running");
+          if (activity) {
+            yield { kind: "activity", activity };
+          }
+        }
+
         if (msg.method === "item/agentMessage/delta" && msg.params?.turnId === turnId) {
           yield { kind: "delta", delta: msg.params.delta || "" };
         }
 
         if (msg.method === "item/completed" && msg.params?.item) {
+          if (msg.params.turnId === turnId) {
+            const activity = normalizeActivityEvent(msg.params.item, "completed");
+            if (activity) {
+              yield { kind: "activity", activity };
+            }
+          }
           const item = normalizeThreadItem(msg.params.item);
           if (msg.params.turnId === turnId && item?.type === "agent_message") {
             yield { kind: "item.completed", item };
@@ -1331,6 +1348,235 @@ function normalizeThreadItem(item) {
   }
 
   return item;
+}
+
+function normalizeActivityEvent(item, status) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const itemType = typeof item.type === "string" ? item.type : "";
+  if (!itemType || itemType === "userMessage" || itemType === "agentMessage") {
+    return null;
+  }
+
+  const timestamps = buildActivityTimestamps(item, status);
+
+  if (itemType === "reasoning") {
+    return {
+      id: String(item.id || `reasoning-${status}`),
+      kind: "thinking",
+      status,
+      ...timestamps
+    };
+  }
+
+  if (itemType === "commandExecution") {
+    const kind = classifyCommandActivity(item.command);
+    return {
+      id: String(item.id || `command-${status}`),
+      kind,
+      status,
+      ...timestamps,
+      detail: buildActivityDetail(item, kind, status)
+    };
+  }
+
+  const kind = classifyGenericActivity(itemType);
+  return {
+    id: String(item.id || `${itemType}-${status}`),
+    kind,
+    status,
+    ...timestamps,
+    detail: buildActivityDetail(item, kind, status)
+  };
+}
+
+function buildActivityTimestamps(item, status) {
+  const fallback = new Date().toISOString();
+  const createdAt = normalizeActivityTimestamp(
+    item.createdAt || item.startedAt || item.timestamp,
+    fallback
+  );
+  const startedAt = normalizeActivityTimestamp(item.startedAt || item.createdAt || item.timestamp, createdAt);
+  const completedAt = status === "completed"
+    ? normalizeActivityTimestamp(item.completedAt || item.finishedAt || item.endedAt, fallback)
+    : null;
+  return {
+    createdAt,
+    startedAt,
+    completedAt
+  };
+}
+
+function normalizeActivityTimestamp(value, fallback) {
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return fallback;
+}
+
+function buildActivityDetail(item, kind, status) {
+  const command = firstNonEmptyString([
+    item.command,
+    item.invocation,
+    item.input
+  ]);
+  const cwd = firstNonEmptyString([
+    item.cwd,
+    item.directory,
+    item.workdir,
+    item.execPath
+  ]);
+  const summary = firstNonEmptyString([
+    item.summary,
+    item.description,
+    item.title,
+    item.text,
+    item.query,
+    item.pattern
+  ]);
+  const output = truncateActivityText(firstNonEmptyString([
+    item.output,
+    item.combinedOutput,
+    item.aggregatedOutput,
+    joinCommandStreams(item.stdout, item.stderr),
+    item.stdout,
+    item.stderr,
+    typeof item.result === "string" ? item.result : null,
+    typeof item.error === "string" ? item.error : item.error?.message
+  ]), 1600);
+  const paths = firstStringArray([
+    item.paths,
+    item.files,
+    item.filePaths,
+    item.targets,
+    item.path,
+    item.filePath
+  ]);
+  const query = firstNonEmptyString([
+    item.query,
+    item.search,
+    item.pattern
+  ]);
+  const exitCode = normalizeActivityNumber(item.exitCode ?? item.exit_code ?? item.code);
+  let durationMs = normalizeDurationMs(item.durationMs ?? item.duration_ms ?? item.elapsedMs ?? item.elapsed_ms);
+  if (durationMs == null && status === "completed") {
+    const startedAt = Date.parse(item.startedAt || item.createdAt || "");
+    const completedAt = Date.parse(item.completedAt || item.finishedAt || item.endedAt || "");
+    if (!Number.isNaN(startedAt) && !Number.isNaN(completedAt) && completedAt >= startedAt) {
+      durationMs = completedAt - startedAt;
+    }
+  }
+
+  return cleanActivityDetail({
+    summary,
+    command,
+    cwd,
+    query,
+    paths,
+    output,
+    exitCode,
+    durationMs,
+    encrypted: kind === "thinking" ? true : undefined
+  });
+}
+
+function joinCommandStreams(stdout, stderr) {
+  const parts = [stdout, stderr]
+    .filter((value) => typeof value === "string" && value.trim());
+  return parts.length ? parts.join("\n") : null;
+}
+
+function firstNonEmptyString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function firstStringArray(values) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const next = value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean);
+      if (next.length) {
+        return next;
+      }
+    }
+    if (typeof value === "string" && value.trim()) {
+      return [value.trim()];
+    }
+  }
+  return null;
+}
+
+function normalizeActivityNumber(value) {
+  if (value == null || value === "") return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+function normalizeDurationMs(value) {
+  const next = normalizeActivityNumber(value);
+  return next != null && next >= 0 ? Math.round(next) : null;
+}
+
+function truncateActivityText(value, maxLength) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  const text = value.trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength).trimEnd()}\n…`;
+}
+
+function cleanActivityDetail(detail) {
+  if (!detail || typeof detail !== "object") {
+    return null;
+  }
+  const next = {};
+  for (const [key, value] of Object.entries(detail)) {
+    if (value == null) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    if (Array.isArray(value) && !value.length) continue;
+    next[key] = value;
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+function classifyCommandActivity(command) {
+  const text = String(command || "").toLowerCase();
+  if (!text) return "command";
+  if (/\b(git)\b/.test(text)) return "git";
+  if (/\b(npm test|pnpm test|yarn test|bun test|vitest|jest|pytest|cargo test|go test|gradle test|xcodebuild test)\b/.test(text)) {
+    return "test";
+  }
+  if (/\b(rg|grep|find|fd|ls|tree|cat|sed|head|tail)\b/.test(text)) return "inspect";
+  if (/\b(apply_patch|patch|mv|cp|rm|mkdir|touch|tee)\b/.test(text)) return "edit";
+  return "command";
+}
+
+function classifyGenericActivity(itemType) {
+  const text = String(itemType || "").toLowerCase();
+  if (text.includes("git")) return "git";
+  if (text.includes("search") || text.includes("read") || text.includes("file")) return "inspect";
+  if (text.includes("patch") || text.includes("edit") || text.includes("write")) return "edit";
+  return "work";
 }
 
 function sandboxValue() {
@@ -3058,6 +3304,7 @@ class PairServerAgent {
             this.chatTaskStore.updateTask({ clientId: msg.client_id, requestId, threadId: data?.thread_id, appendText: "" }).catch(() => {});
             this.sendRpcStream(msg, "thread", data);
           },
+          onActivity: (data) => this.sendRpcStream(msg, "activity", data),
           onDelta: (data) => {
             this.chatTaskStore.updateTask({ clientId: msg.client_id, requestId, appendText: data?.delta || "" }).catch(() => {});
             this.sendRpcStream(msg, "delta", data);
